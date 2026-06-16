@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from custom_components.codex_assist.codex_auth import CodexTokenSet
+from custom_components.codex_assist.codex_auth import CodexAuthTemporaryError, CodexTokenSet
 from custom_components.codex_assist.codex_runtime import resolve_runtime_tokens
 
 
@@ -20,6 +20,14 @@ class FakeAuthClient:
     async def refresh(self, tokens):
         self.calls.append(tokens)
         return self.refreshed
+
+
+class FailingAuthClient:
+    def __init__(self, error):
+        self.error = error
+
+    async def refresh(self, tokens):
+        raise self.error
 
 
 @pytest.mark.asyncio
@@ -77,6 +85,31 @@ async def test_resolve_runtime_tokens_requires_refresh_token_to_refresh_expired_
         await resolve_runtime_tokens(
             {"access_token": _jwt_with_exp(999)},
             auth_client=auth,
+            async_update_entry_data=lambda updated: None,
+            now=1_000,
+        )
+
+
+@pytest.mark.asyncio
+async def test_resolve_runtime_tokens_keeps_current_token_when_refresh_is_temporarily_blocked():
+    data = {"access_token": _jwt_with_exp(1_060), "refresh_token": "refresh-1"}
+
+    tokens = await resolve_runtime_tokens(
+        data,
+        auth_client=FailingAuthClient(CodexAuthTemporaryError("rate limited")),
+        async_update_entry_data=lambda updated: None,
+        now=1_000,
+    )
+
+    assert tokens == CodexTokenSet(data["access_token"], "refresh-1")
+
+
+@pytest.mark.asyncio
+async def test_resolve_runtime_tokens_raises_temporary_error_when_access_token_is_expired():
+    with pytest.raises(CodexAuthTemporaryError):
+        await resolve_runtime_tokens(
+            {"access_token": _jwt_with_exp(999), "refresh_token": "refresh-1"},
+            auth_client=FailingAuthClient(CodexAuthTemporaryError("rate limited")),
             async_update_entry_data=lambda updated: None,
             now=1_000,
         )

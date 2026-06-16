@@ -10,7 +10,12 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.httpx_client import get_async_client
 from homeassistant.util.json import json_loads
 
-from .codex_auth import CodexAuthClient, CodexTokenSet
+from .codex_auth import (
+    CodexAuthClient,
+    CodexAuthTemporaryError,
+    CodexReauthRequiredError,
+    CodexTokenSet,
+)
 from .codex_client import CodexAuthenticationError, CodexClient, CodexImageResult
 from .codex_image import DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_SIZE, image_size_dimensions
 from .codex_runtime import resolve_runtime_tokens
@@ -91,13 +96,16 @@ class CodexAssistAITaskEntity(ai_task.AITaskEntity):
                     data=data,
                 ),
             )
-        except RuntimeError as err:
+        except CodexReauthRequiredError as err:
             LOGGER.warning("Codex Assist AI Task authentication failed: %s", err)
             self.entry.async_start_reauth(self.hass)
             raise HomeAssistantError(
                 "Codex Assist needs you to sign in again. Open Home Assistant "
                 "repairs or the integration page to reauthenticate."
             ) from err
+        except (CodexAuthTemporaryError, RuntimeError) as err:
+            LOGGER.exception("Codex Assist AI Task authentication failed")
+            raise HomeAssistantError(f"Codex Assist AI Task failed: {err}") from err
 
         codex = CodexClient(http_client=http_client, access_token=tokens.access_token)
         try:
@@ -116,6 +124,13 @@ class CodexAssistAITaskEntity(ai_task.AITaskEntity):
                 text_verbosity=text_verbosity,
             )
         except (httpx.HTTPError, RuntimeError) as err:
+            if isinstance(err, CodexReauthRequiredError):
+                LOGGER.warning("Codex Assist AI Task needs reauth after auth retry: %s", err)
+                self.entry.async_start_reauth(self.hass)
+                raise HomeAssistantError(
+                    "Codex Assist needs you to sign in again. Open Home Assistant "
+                    "repairs or the integration page to reauthenticate."
+                ) from err
             LOGGER.exception("Codex Assist AI Task model request failed")
             raise HomeAssistantError(f"Codex Assist AI Task failed: {err}") from err
         except (ValueError, TypeError) as err:
@@ -155,13 +170,16 @@ class CodexAssistAITaskEntity(ai_task.AITaskEntity):
                     data=data,
                 ),
             )
-        except RuntimeError as err:
+        except CodexReauthRequiredError as err:
             LOGGER.warning("Codex Assist AI Task authentication failed: %s", err)
             self.entry.async_start_reauth(self.hass)
             raise HomeAssistantError(
                 "Codex Assist needs you to sign in again. Open Home Assistant "
                 "repairs or the integration page to reauthenticate."
             ) from err
+        except (CodexAuthTemporaryError, RuntimeError) as err:
+            LOGGER.exception("Codex Assist AI Task authentication failed")
+            raise HomeAssistantError(f"Codex Assist image generation failed: {err}") from err
 
         codex = CodexClient(http_client=http_client, access_token=tokens.access_token)
         try:
@@ -178,6 +196,16 @@ class CodexAssistAITaskEntity(ai_task.AITaskEntity):
                 image_size=image_size,
             )
         except (httpx.HTTPError, RuntimeError) as err:
+            if isinstance(err, CodexReauthRequiredError):
+                LOGGER.warning(
+                    "Codex Assist AI Task image generation needs reauth after auth retry: %s",
+                    err,
+                )
+                self.entry.async_start_reauth(self.hass)
+                raise HomeAssistantError(
+                    "Codex Assist needs you to sign in again. Open Home Assistant "
+                    "repairs or the integration page to reauthenticate."
+                ) from err
             LOGGER.exception("Codex Assist AI Task image request failed")
             raise HomeAssistantError(f"Codex Assist image generation failed: {err}") from err
         except (ValueError, TypeError) as err:
@@ -240,23 +268,31 @@ async def _run_codex_ai_task_chat_log(
                 "Codex Assist AI Task access token was rejected; refreshing and retrying once: %s",
                 err,
             )
-            tokens = await _refresh_runtime_tokens(hass, entry, auth_client, tokens)
+            try:
+                tokens = await _refresh_runtime_tokens(hass, entry, auth_client, tokens)
+            except CodexReauthRequiredError:
+                raise
             codex = CodexClient(
                 http_client=get_async_client(hass),
                 access_token=tokens.access_token,
             )
-            await _stream_codex_turn_into_chat_log(
-                chat_log=chat_log,
-                codex=codex,
-                entity_id=entity_id,
-                model=model,
-                instructions=_instructions_from_chat_log(chat_log, prompt),
-                input_items=await _codex_input_from_chat_log(hass, chat_log),
-                tools=_codex_tools_from_chat_log(chat_log),
-                reasoning_effort=reasoning_effort,
-                reasoning_summary=reasoning_summary,
-                text_verbosity=text_verbosity,
-            )
+            try:
+                await _stream_codex_turn_into_chat_log(
+                    chat_log=chat_log,
+                    codex=codex,
+                    entity_id=entity_id,
+                    model=model,
+                    instructions=_instructions_from_chat_log(chat_log, prompt),
+                    input_items=await _codex_input_from_chat_log(hass, chat_log),
+                    tools=_codex_tools_from_chat_log(chat_log),
+                    reasoning_effort=reasoning_effort,
+                    reasoning_summary=reasoning_summary,
+                    text_verbosity=text_verbosity,
+                )
+            except CodexAuthenticationError as retry_err:
+                raise CodexReauthRequiredError(
+                    "Codex access token was rejected after refresh"
+                ) from retry_err
         if not chat_log.unresponded_tool_results:
             break
 
@@ -294,13 +330,18 @@ async def _generate_codex_ai_task_image(
             http_client=get_async_client(hass),
             access_token=tokens.access_token,
         )
-        return await codex.generate_image(
-            prompt=task.instructions,
-            input_items=await _codex_input_from_chat_log(hass, chat_log),
-            chat_model=chat_model,
-            image_model=image_model,
-            size=image_size,
-        )
+        try:
+            return await codex.generate_image(
+                prompt=task.instructions,
+                input_items=await _codex_input_from_chat_log(hass, chat_log),
+                chat_model=chat_model,
+                image_model=image_model,
+                size=image_size,
+            )
+        except CodexAuthenticationError as retry_err:
+            raise CodexReauthRequiredError(
+                "Codex image access token was rejected after refresh"
+            ) from retry_err
 
 
 def _structured_data_from_text(text: str, structure: dict[str, Any] | None) -> Any:
@@ -310,5 +351,8 @@ def _structured_data_from_text(text: str, structure: dict[str, Any] | None) -> A
     try:
         return json_loads(text)
     except ValueError as err:
-        LOGGER.error("Failed to parse Codex Assist AI Task JSON response: %s", text)
+        LOGGER.error(
+            "Failed to parse Codex Assist AI Task JSON response (%s chars)",
+            len(text),
+        )
         raise HomeAssistantError("Codex Assist AI Task returned invalid JSON") from err

@@ -37,6 +37,14 @@ class CodexTokenSet:
     refresh_token: str
 
 
+class CodexReauthRequiredError(RuntimeError):
+    """Raised when stored Codex credentials cannot be refreshed."""
+
+
+class CodexAuthTemporaryError(RuntimeError):
+    """Raised when Codex auth is temporarily unavailable or rate-limited."""
+
+
 class CodexAuthClient:
     def __init__(self, http_client: AsyncPostClient) -> None:
         self._http_client = http_client
@@ -110,7 +118,7 @@ class CodexAuthClient:
             raise RuntimeError(
                 f"Codex token exchange failed with status {response.status_code}"
             )
-        return _token_set_from_payload(response.json())
+        return _token_set_from_payload(response.json(), require_refresh=True)
 
     async def refresh(self, tokens: CodexTokenSet) -> CodexTokenSet:
         response = await self._http_client.post(
@@ -123,9 +131,10 @@ class CodexAuthClient:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         if response.status_code != 200:
-            raise RuntimeError(
-                f"Codex token refresh failed with status {response.status_code}"
-            )
+            message = f"Codex token refresh failed with status {response.status_code}"
+            if response.status_code in {400, 401, 403}:
+                raise CodexReauthRequiredError(message)
+            raise CodexAuthTemporaryError(message)
         return _token_set_from_payload(response.json(), fallback_refresh=tokens.refresh_token)
 
 
@@ -141,9 +150,12 @@ def _token_set_from_payload(
     payload: dict[str, Any],
     *,
     fallback_refresh: str = "",
+    require_refresh: bool = False,
 ) -> CodexTokenSet:
     access_token = str(payload.get("access_token") or "").strip()
     if not access_token:
         raise RuntimeError("Codex token response was missing access_token")
     refresh_token = str(payload.get("refresh_token") or fallback_refresh).strip()
+    if require_refresh and not refresh_token:
+        raise RuntimeError("Codex token response was missing refresh_token")
     return CodexTokenSet(access_token=access_token, refresh_token=refresh_token)

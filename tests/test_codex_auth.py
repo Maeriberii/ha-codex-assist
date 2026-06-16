@@ -1,6 +1,11 @@
 import pytest
 
-from custom_components.codex_assist.codex_auth import CodexAuthClient, CodexTokenSet
+from custom_components.codex_assist.codex_auth import (
+    CodexAuthClient,
+    CodexAuthTemporaryError,
+    CodexReauthRequiredError,
+    CodexTokenSet,
+)
 
 
 class FakeResponse:
@@ -67,5 +72,14 @@ async def test_refresh_raises_clear_error_on_failed_response():
     http = FakeHttpClient([FakeResponse(401, {"error": "invalid_grant"})])
     client = CodexAuthClient(http_client=http)
 
-    with pytest.raises(RuntimeError, match="Codex token refresh failed with status 401"):
+    with pytest.raises(CodexReauthRequiredError, match="status 401"):
+        await client.refresh(CodexTokenSet(access_token="access-1", refresh_token="refresh-1"))
+
+
+@pytest.mark.asyncio
+async def test_refresh_treats_rate_limit_as_temporary_auth_failure():
+    http = FakeHttpClient([FakeResponse(429, {"error": "rate_limited"})])
+    client = CodexAuthClient(http_client=http)
+
+    with pytest.raises(CodexAuthTemporaryError, match="status 429"):
         await client.refresh(CodexTokenSet(access_token="access-1", refresh_token="refresh-1"))
