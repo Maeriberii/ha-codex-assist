@@ -16,7 +16,12 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.httpx_client import get_async_client
 
 from . import DOMAIN
-from .codex_auth import CodexAuthClient, CodexTokenSet
+from .codex_auth import (
+    CodexAuthClient,
+    CodexAuthTemporaryError,
+    CodexReauthRequiredError,
+    CodexTokenSet,
+)
 from .codex_client import (
     CodexAuthenticationError,
     CodexClient,
@@ -107,9 +112,18 @@ class CodexAssistConversationEntity(
                     data=data,
                 ),
             )
-        except RuntimeError as err:
+        except CodexReauthRequiredError as err:
             LOGGER.warning("Codex Assist authentication failed; starting reauth flow: %s", err)
             return _start_reauth_result(self.hass, self.entry, response, user_input)
+        except (CodexAuthTemporaryError, RuntimeError) as err:
+            LOGGER.exception("Codex Assist authentication failed")
+            chat_log.async_add_assistant_content_without_tools(
+                conversation.AssistantContent(
+                    agent_id=user_input.agent_id,
+                    content=f"Codex Assist failed: {err}",
+                )
+            )
+            return conversation.async_get_result_from_chat_log(user_input, chat_log)
 
         codex = CodexClient(http_client=http_client, access_token=tokens.access_token)
         try:
@@ -139,7 +153,7 @@ class CodexAssistConversationEntity(
                             auth_client,
                             tokens,
                         )
-                    except RuntimeError as refresh_err:
+                    except CodexReauthRequiredError as refresh_err:
                         LOGGER.warning(
                             "Codex Assist token refresh failed; starting reauth flow: %s",
                             refresh_err,
@@ -274,7 +288,7 @@ async def _refresh_runtime_tokens(
     tokens: CodexTokenSet,
 ) -> CodexTokenSet:
     if not tokens.refresh_token:
-        raise RuntimeError("Codex Assist is missing refresh_token")
+        raise CodexReauthRequiredError("Codex Assist is missing refresh_token")
     refreshed = await auth_client.refresh(tokens)
     updated_data = dict(entry.data)
     updated_data["access_token"] = refreshed.access_token
@@ -354,7 +368,29 @@ async def _codex_input_from_chat_log(
                     }
                 )
 
-    return input_items[-24:]
+    return _trim_codex_input_items(input_items, max_items=24)
+
+
+def _trim_codex_input_items(
+    input_items: list[dict[str, Any]],
+    *,
+    max_items: int,
+) -> list[dict[str, Any]]:
+    if len(input_items) <= max_items:
+        return input_items
+
+    trimmed = input_items[-max_items:]
+    included_calls = {
+        str(item.get("call_id"))
+        for item in trimmed
+        if item.get("type") == "function_call" and item.get("call_id")
+    }
+    return [
+        item
+        for item in trimmed
+        if item.get("type") != "function_call_output"
+        or str(item.get("call_id")) in included_calls
+    ]
 
 
 async def _async_image_attachments_for_codex(

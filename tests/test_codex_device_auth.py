@@ -158,3 +158,17 @@ async def test_exchange_authorization_code_posts_form_and_returns_tokens():
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_exchange_authorization_code_requires_refresh_token():
+    http = FakeHttpClient([FakeResponse(200, {"access_token": "access-1"})])
+    client = CodexAuthClient(http_client=http)
+
+    with pytest.raises(RuntimeError, match="missing refresh_token"):
+        await client.exchange_authorization_code(
+            CodexAuthorizationCode(
+                authorization_code="authorization-1",
+                code_verifier="verifier-1",
+            )
+        )

@@ -7,7 +7,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
 
-from .codex_auth import CodexTokenSet
+from .codex_auth import CodexAuthTemporaryError, CodexReauthRequiredError, CodexTokenSet
 
 ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 
@@ -27,20 +27,24 @@ async def resolve_runtime_tokens(
     access_token = str(entry_data.get("access_token") or "").strip()
     refresh_token = str(entry_data.get("refresh_token") or "").strip()
     if not access_token:
-        raise RuntimeError("Codex Assist is missing access_token")
+        raise CodexReauthRequiredError("Codex Assist is missing access_token")
 
     tokens = CodexTokenSet(access_token=access_token, refresh_token=refresh_token)
-    if not access_token_is_expiring(
-        access_token,
-        now=time.time() if now is None else now,
-        skew_seconds=refresh_skew_seconds,
-    ):
+    now = time.time() if now is None else now
+    exp = _decode_jwt_exp(access_token)
+    if exp is None or exp > now + refresh_skew_seconds:
         return tokens
 
     if not refresh_token:
-        raise RuntimeError("Codex Assist is missing refresh_token")
+        raise CodexReauthRequiredError("Codex Assist is missing refresh_token")
 
-    refreshed = await auth_client.refresh(tokens)
+    try:
+        refreshed = await auth_client.refresh(tokens)
+    except CodexAuthTemporaryError:
+        if exp > now:
+            return tokens
+        raise
+
     updated_data = dict(entry_data)
     updated_data["access_token"] = refreshed.access_token
     updated_data["refresh_token"] = refreshed.refresh_token
