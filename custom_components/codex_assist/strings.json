@@ -21,7 +21,25 @@
       "reauth_confirm": {
         "title": "Sign in with Codex again",
         "description": "Codex Assist needs a fresh ChatGPT/Codex sign-in. Continue to request a new device code."
+      },
+      "reconfigure": {
+        "title": "Reconfigure Codex Assist",
+        "description": "Update Codex Assist settings and sign in again with your ChatGPT/Codex account using a new device code.",
+        "data": {
+          "model": "Chat model",
+          "image_model": "Image quality",
+          "image_size": "Image size",
+          "prompt": "System prompt",
+          "reasoning_effort": "Reasoning effort",
+          "reasoning_summary": "Reasoning summary",
+          "text_verbosity": "Text verbosity"
+        }
       }
+    },
+    "abort": {
+      "reconfigure_successful": "Codex Assist was reconfigured and signed in again.",
+      "reauth_successful": "Codex Assist signed in again.",
+      "already_configured": "Codex Assist is already configured."
     },
     "error": {
       "authorization_pending": "That code has not been approved yet. Finish signing in in your browser, wait a few seconds, then continue again.",

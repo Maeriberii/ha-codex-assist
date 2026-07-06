@@ -5,6 +5,7 @@ import importlib
 import pytest
 
 from custom_components.codex_assist.codex_auth import CodexAuthTemporaryError, CodexTokenSet
+from custom_components.codex_assist.codex_client import CodexRateLimitError
 from tests.ha_fakes import install_homeassistant_fakes
 
 
@@ -47,6 +48,7 @@ class FakeHandleMessageChatLog:
     def __init__(self):
         self.content = []
         self.added = []
+        self.llm_api = None
 
     async def async_provide_llm_data(self, *args):
         self.provided_args = args
@@ -133,3 +135,41 @@ async def test_handle_message_reports_temporary_auth_failure_without_reauth(
     assert result[1] is chat_log
     assert len(chat_log.added) == 1
     assert "rate limited" in chat_log.added[0].content
+
+
+@pytest.mark.asyncio
+async def test_handle_message_reports_friendly_usage_limit_without_status_code(
+    conversation_module,
+    monkeypatch,
+):
+    async def resolve_tokens(*args, **kwargs):
+        return CodexTokenSet("access-1", "refresh-1")
+
+    async def raise_rate_limit(*args, **kwargs):
+        raise CodexRateLimitError("Codex usage limit or rate limit reached: quota exceeded")
+
+    hass = type(
+        "Hass",
+        (),
+        {"http_client": None, "config_entries": FakeConfigEntries()},
+    )()
+    entry = FakeEntry()
+    entry.options = {}
+    entity = conversation_module.CodexAssistConversationEntity(entry)
+    entity.hass = hass
+    entity.entity_id = "conversation.codex_assist"
+    chat_log = FakeHandleMessageChatLog()
+    monkeypatch.setattr(conversation_module, "resolve_runtime_tokens", resolve_tokens)
+    monkeypatch.setattr(
+        conversation_module,
+        "_stream_codex_turn_into_chat_log",
+        raise_rate_limit,
+    )
+
+    result = await entity._async_handle_message(FakeUserInput(), chat_log)
+
+    assert result[1] is chat_log
+    assert len(chat_log.added) == 1
+    assert "usage limit" in chat_log.added[0].content.lower()
+    assert "status 429" not in chat_log.added[0].content
+    assert "Codex request failed" not in chat_log.added[0].content

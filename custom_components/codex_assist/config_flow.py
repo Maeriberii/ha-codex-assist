@@ -99,10 +99,36 @@ class CodexAssistConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._get_reauth_entry(),
                 data_updates=data,
             )
+        if self.source == config_entries.SOURCE_RECONFIGURE:
+            return self.async_update_reload_and_abort(
+                self._get_reconfigure_entry(),
+                data_updates=data,
+            )
 
         await self.async_set_unique_id(DOMAIN)
         self._abort_if_unique_id_configured()
         return self.async_create_entry(title="Codex Assist", data=data)
+
+    async def async_step_reconfigure(self, user_input=None):
+        entry = self._get_reconfigure_entry()
+        defaults = {**entry.data, **entry.options}
+
+        if user_input is not None:
+            self._setup_input = dict(user_input)
+            try:
+                self._device_code = await self._auth_client().request_device_code()
+            except RuntimeError:
+                return self.async_show_form(
+                    step_id="reconfigure",
+                    data_schema=_settings_schema(defaults, model_options=DEFAULT_CODEX_MODELS),
+                    errors={"base": "device_code_request_failed"},
+                )
+            return await self.async_step_device()
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=_settings_schema(defaults, model_options=DEFAULT_CODEX_MODELS),
+        )
 
     async def async_step_reauth(self, entry_data: Mapping[str, Any]):
         self._setup_input = {

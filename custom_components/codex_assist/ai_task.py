@@ -16,7 +16,12 @@ from .codex_auth import (
     CodexReauthRequiredError,
     CodexTokenSet,
 )
-from .codex_client import CodexAuthenticationError, CodexClient, CodexImageResult
+from .codex_client import (
+    CodexAuthenticationError,
+    CodexClient,
+    CodexImageResult,
+    CodexRateLimitError,
+)
 from .codex_image import DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_SIZE, image_size_dimensions
 from .codex_runtime import resolve_runtime_tokens
 from .config_flow import (
@@ -38,6 +43,11 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 LOGGER = logging.getLogger(__name__)
+
+_RATE_LIMIT_MESSAGE = (
+    "Codex Assist has hit your ChatGPT/Codex usage limit or is being rate limited. "
+    "Wait a while and try again, or check your plan's usage limits."
+)
 
 
 async def async_setup_entry(
@@ -123,6 +133,9 @@ class CodexAssistAITaskEntity(ai_task.AITaskEntity):
                 reasoning_summary=reasoning_summary,
                 text_verbosity=text_verbosity,
             )
+        except CodexRateLimitError as err:
+            LOGGER.warning("Codex Assist AI Task hit usage or rate limit: %s", err)
+            raise HomeAssistantError(_RATE_LIMIT_MESSAGE) from err
         except (httpx.HTTPError, RuntimeError) as err:
             if isinstance(err, CodexReauthRequiredError):
                 LOGGER.warning("Codex Assist AI Task needs reauth after auth retry: %s", err)
@@ -195,6 +208,12 @@ class CodexAssistAITaskEntity(ai_task.AITaskEntity):
                 image_model=image_model,
                 image_size=image_size,
             )
+        except CodexRateLimitError as err:
+            LOGGER.warning(
+                "Codex Assist AI Task image generation hit usage or rate limit: %s",
+                err,
+            )
+            raise HomeAssistantError(_RATE_LIMIT_MESSAGE) from err
         except (httpx.HTTPError, RuntimeError) as err:
             if isinstance(err, CodexReauthRequiredError):
                 LOGGER.warning(

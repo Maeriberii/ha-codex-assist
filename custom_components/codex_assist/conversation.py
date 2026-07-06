@@ -25,6 +25,7 @@ from .codex_auth import (
 from .codex_client import (
     CodexAuthenticationError,
     CodexClient,
+    CodexRateLimitError,
     CodexStreamDelta,
     CodexTextDelta,
     CodexToolCallDelta,
@@ -195,6 +196,18 @@ class CodexAssistConversationEntity(
                         )
                 if not tool_call_requested:
                     break
+        except CodexRateLimitError as err:
+            LOGGER.warning("Codex Assist hit usage or rate limit: %s", err)
+            chat_log.async_add_assistant_content_without_tools(
+                conversation.AssistantContent(
+                    agent_id=user_input.agent_id,
+                    content=(
+                        "Codex Assist has hit your ChatGPT/Codex usage limit or is being "
+                        "rate limited. Wait a while and try again, or check your plan's "
+                        "usage limits."
+                    ),
+                )
+            )
         except (httpx.HTTPError, RuntimeError) as err:
             LOGGER.exception("Codex Assist model request failed")
             text = f"Codex Assist failed: {err}"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import types
 
 import pytest
 
@@ -134,4 +135,128 @@ async def test_reauth_updates_existing_entry_after_device_token_exchange(
         "model": "gpt-5.4",
         "access_token": "access-1",
         "refresh_token": "refresh-1",
+    }
+
+
+def _schema_defaults(data_schema) -> dict[str, object]:
+    return {
+        field.key: field.default
+        for field in data_schema.schema
+        if hasattr(field, "key") and hasattr(field, "default")
+    }
+
+
+def _reconfigure_entry(**overrides):
+    data = {
+        "model": "gpt-5.4",
+        "prompt": "Saved prompt.",
+        "reasoning_effort": "high",
+        "reasoning_summary": "detailed",
+        "text_verbosity": "low",
+        "image_model": "gpt-image-2-high",
+        "image_size": "1536x1024",
+        "access_token": "old-access",
+        "refresh_token": "old-refresh",
+    }
+    options = {}
+    data.update(overrides.pop("data", {}))
+    options.update(overrides.pop("options", {}))
+    return types.SimpleNamespace(data=data, options=options, **overrides)
+
+
+@pytest.mark.asyncio
+async def test_reconfigure_shows_form_prefilled_from_entry(config_flow_module):
+    flow = config_flow_module.CodexAssistConfigFlow()
+    flow.source = "reconfigure"
+    flow.reconfigure_entry = _reconfigure_entry()
+
+    result = await flow.async_step_reconfigure()
+
+    assert result["type"] == "form"
+    assert result["step_id"] == "reconfigure"
+    assert _schema_defaults(result["data_schema"]) == {
+        "model": "gpt-5.4",
+        "prompt": "Saved prompt.",
+        "reasoning_effort": "high",
+        "reasoning_summary": "detailed",
+        "text_verbosity": "low",
+        "image_model": "gpt-image-2-high",
+        "image_size": "1536x1024",
+    }
+
+
+@pytest.mark.asyncio
+async def test_reconfigure_updates_existing_entry_after_device_token_exchange(
+    config_flow_module,
+):
+    flow = config_flow_module.CodexAssistConfigFlow()
+    auth = FakeAuthClient()
+    flow._auth_client = lambda: auth
+    flow._setup_input = {
+        "model": "gpt-5.4",
+        "prompt": "Updated prompt.",
+        "reasoning_effort": "medium",
+        "reasoning_summary": "auto",
+        "text_verbosity": "medium",
+        "image_model": "gpt-image-2-medium",
+        "image_size": "1024x1024",
+    }
+    flow._device_code = auth.device_code
+    flow.source = "reconfigure"
+    flow.reconfigure_entry = _reconfigure_entry()
+
+    result = await flow.async_step_device_wait()
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "reconfigure_successful"
+    assert result["entry"] is flow.reconfigure_entry
+    assert result["data_updates"] == {
+        "model": "gpt-5.4",
+        "prompt": "Updated prompt.",
+        "reasoning_effort": "medium",
+        "reasoning_summary": "auto",
+        "text_verbosity": "medium",
+        "image_model": "gpt-image-2-medium",
+        "image_size": "1024x1024",
+        "access_token": "access-1",
+        "refresh_token": "refresh-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_reconfigure_device_code_request_failure_shows_error(config_flow_module):
+    flow = config_flow_module.CodexAssistConfigFlow()
+    auth = FakeAuthClient()
+
+    async def request_device_code():
+        raise RuntimeError("network error")
+
+    auth.request_device_code = request_device_code
+    flow._auth_client = lambda: auth
+    flow.source = "reconfigure"
+    flow.reconfigure_entry = _reconfigure_entry()
+
+    result = await flow.async_step_reconfigure(
+        {
+            "model": "gpt-5.4",
+            "prompt": "Updated prompt.",
+            "reasoning_effort": "medium",
+            "reasoning_summary": "auto",
+            "text_verbosity": "medium",
+            "image_model": "gpt-image-2-medium",
+            "image_size": "1024x1024",
+        }
+    )
+
+    assert result["type"] == "form"
+    assert result["step_id"] == "reconfigure"
+    assert result["errors"] == {"base": "device_code_request_failed"}
+    assert _schema_defaults(result["data_schema"]) == {
+        "model": "gpt-5.4",
+        "prompt": "Saved prompt.",
+        "reasoning_effort": "high",
+        "reasoning_summary": "detailed",
+        "text_verbosity": "low",
+        "image_model": "gpt-image-2-high",
+        "image_size": "1536x1024",
     }

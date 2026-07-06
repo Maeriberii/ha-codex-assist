@@ -4,6 +4,7 @@ from custom_components.codex_assist.codex_client import (
     CodexAuthenticationError,
     CodexClient,
     CodexMessage,
+    CodexRateLimitError,
 )
 
 
@@ -137,15 +138,38 @@ async def test_generate_text_extracts_concatenated_output_text_items():
 
 
 @pytest.mark.asyncio
-async def test_generate_text_raises_clear_error_for_backend_failure():
+async def test_generate_turn_raises_rate_limit_error_for_429():
     http = FakeHttpClient([FakeResponse(429, {"error": "quota"})])
     client = CodexClient(http_client=http, access_token="token-1")
 
-    with pytest.raises(RuntimeError, match="Codex request failed with status 429"):
-        await client.generate_text(
+    with pytest.raises(CodexRateLimitError, match="quota"):
+        await client.generate_turn(
             model="gpt-5.4",
             instructions="x",
-            messages=[CodexMessage(role="user", content="hello")],
+            input_items=[{"role": "user", "content": "hello"}],
+        )
+
+
+@pytest.mark.asyncio
+async def test_generate_turn_raises_rate_limit_error_for_usage_limit_code():
+    http = FakeHttpClient([
+        FakeResponse(
+            403,
+            {
+                "detail": {
+                    "code": "usage_limit_reached",
+                    "message": "Monthly usage limit reached",
+                }
+            },
+        )
+    ])
+    client = CodexClient(http_client=http, access_token="token-1")
+
+    with pytest.raises(CodexRateLimitError, match="Monthly usage limit reached"):
+        await client.generate_turn(
+            model="gpt-5.4",
+            instructions="x",
+            input_items=[{"role": "user", "content": "hello"}],
         )
 
 

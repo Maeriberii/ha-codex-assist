@@ -109,6 +109,10 @@ class CodexClient:
                 raise CodexAuthenticationError(
                     f"Codex authentication failed: {error.detail}"
                 )
+            if _is_rate_limit_response(response.status_code, error):
+                raise CodexRateLimitError(
+                    f"Codex usage limit or rate limit reached: {error.detail}"
+                )
             raise RuntimeError(
                 f"Codex request failed with status {response.status_code}: {error.detail}"
             )
@@ -152,6 +156,10 @@ class CodexClient:
                 if response.status_code == 401 or error.code == "token_invalidated":
                     raise CodexAuthenticationError(
                         f"Codex authentication failed: {error.detail}"
+                    )
+                if _is_rate_limit_response(response.status_code, error):
+                    raise CodexRateLimitError(
+                        f"Codex usage limit or rate limit reached: {error.detail}"
                     )
                 raise RuntimeError(
                     f"Codex request failed with status {response.status_code}: {error.detail}"
@@ -229,6 +237,10 @@ class CodexClient:
                 if response.status_code == 401 or error.code == "token_invalidated":
                     raise CodexAuthenticationError(
                         f"Codex authentication failed: {error.detail}"
+                    )
+                if _is_rate_limit_response(response.status_code, error):
+                    raise CodexRateLimitError(
+                        f"Codex usage limit or rate limit reached: {error.detail}"
                     )
                 raise RuntimeError(
                     f"Codex image request failed with status {response.status_code}: {error.detail}"
@@ -423,6 +435,24 @@ def _chatgpt_account_id(access_token: str) -> str | None:
 
 class CodexAuthenticationError(RuntimeError):
     """Raised when Codex rejects the stored access token."""
+
+
+class CodexRateLimitError(RuntimeError):
+    """Raised when Codex rejects a request due to usage or rate limits."""
+
+
+_RATE_LIMIT_ERROR_CODES = frozenset(
+    {
+        "rate_limit_exceeded",
+        "usage_limit_reached",
+        "usage_not_included",
+        "quota_exceeded",
+    }
+)
+
+
+def _is_rate_limit_response(status_code: int, error: CodexResponseError) -> bool:
+    return status_code == 429 or error.code in _RATE_LIMIT_ERROR_CODES
 
 
 @dataclass(frozen=True)

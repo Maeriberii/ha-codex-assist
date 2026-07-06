@@ -4,6 +4,7 @@ import pytest
 
 from custom_components.codex_assist.codex_client import (
     CodexClient,
+    CodexRateLimitError,
     CodexTextDelta,
     CodexToolCallDelta,
 )
@@ -167,3 +168,21 @@ async def test_stream_turn_omits_advanced_options_for_non_reasoning_models():
     assert "reasoning" not in payload
     assert "include" not in payload
     assert "text" not in payload
+
+
+@pytest.mark.asyncio
+async def test_stream_turn_raises_rate_limit_error_for_429():
+    response = FakeStreamResponse(
+        429,
+        [],
+        body=b'{"error":"quota exceeded"}',
+    )
+    client = CodexClient(http_client=FakeHttpClient(response), access_token="token-1")
+
+    with pytest.raises(CodexRateLimitError, match="quota exceeded"):
+        async for _delta in client.stream_turn(
+            model="gpt-5.4",
+            instructions="x",
+            input_items=[{"role": "user", "content": "hello"}],
+        ):
+            pass

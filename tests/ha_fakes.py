@@ -44,15 +44,23 @@ def install_homeassistant_fakes(monkeypatch):
             self.duplicate_checked = True
 
         def async_update_reload_and_abort(self, entry, data_updates):
+            reason = (
+                "reconfigure_successful"
+                if getattr(self, "source", "") == "reconfigure"
+                else "reauth_successful"
+            )
             return {
                 "type": "abort",
-                "reason": "reauth_successful",
+                "reason": reason,
                 "entry": entry,
                 "data_updates": data_updates,
             }
 
         def _get_reauth_entry(self):
             return getattr(self, "reauth_entry", object())
+
+        def _get_reconfigure_entry(self):
+            return getattr(self, "reconfigure_entry", object())
 
     class OptionsFlow:
         @property
@@ -158,6 +166,7 @@ def install_homeassistant_fakes(monkeypatch):
     config_entries.ConfigEntry = ConfigEntry
     config_entries.OptionsFlow = OptionsFlow
     config_entries.SOURCE_REAUTH = "reauth"
+    config_entries.SOURCE_RECONFIGURE = "reconfigure"
     conversation.AbstractConversationAgent = AbstractConversationAgent
     conversation.AssistantContent = AssistantContent
     conversation.AssistantContentDeltaDict = dict
