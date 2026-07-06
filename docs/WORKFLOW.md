@@ -9,6 +9,19 @@ uv run ruff check .
 uv run pytest
 ```
 
+## Real Home Assistant smoke tests
+
+The main suite in `tests/` runs against lightweight Home Assistant fakes for speed. The `tests_ha/` suite runs against a real Home Assistant test harness (`pytest-homeassistant-custom-component`) and catches upstream HA API breakage.
+
+It requires Python 3.14+ and its own dependencies:
+
+```bash
+pip install -r requirements_test_ha.txt
+python -m pytest tests_ha -q
+```
+
+CI runs this suite on every push/PR and on a weekly schedule so upstream Home Assistant changes surface even without new commits.
+
 ## HACS release checklist
 
 1. Update `custom_components/codex_assist/manifest.json` version.

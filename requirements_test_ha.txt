@@ -1,0 +1,11 @@
+# Real Home Assistant smoke-test environment (Python 3.14+).
+# Intentionally unpinned so scheduled CI runs track the latest Home Assistant
+# release and surface upstream breakage early.
+pytest-homeassistant-custom-component
+
+# Runtime requirements of the Home Assistant conversation and ai_task
+# components, which the smoke tests exercise but the test harness does not
+# bundle. ai_task transitively imports camera, which needs PyTurboJPEG.
+hassil
+home-assistant-intents
+PyTurboJPEG
