@@ -7,6 +7,12 @@ from .codex_client import codex_headers
 CODEX_MODELS_URL = "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0"
 
 DEFAULT_CODEX_MODELS = [
+    "gpt-5.6-sol",
+    "gpt-5.6-sol-pro",
+    "gpt-5.6-terra",
+    "gpt-5.6-terra-pro",
+    "gpt-5.6-luna",
+    "gpt-5.6-luna-pro",
     "gpt-5.5",
     "gpt-5.4-mini",
     "gpt-5.4",
@@ -14,7 +20,15 @@ DEFAULT_CODEX_MODELS = [
     "gpt-5.3-codex-spark",
 ]
 
+_FORWARD_COMPAT_TEMPLATES = ("gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex")
+
 _FORWARD_COMPAT_MODELS = {
+    "gpt-5.6-sol": _FORWARD_COMPAT_TEMPLATES,
+    "gpt-5.6-sol-pro": _FORWARD_COMPAT_TEMPLATES,
+    "gpt-5.6-terra": _FORWARD_COMPAT_TEMPLATES,
+    "gpt-5.6-terra-pro": _FORWARD_COMPAT_TEMPLATES,
+    "gpt-5.6-luna": _FORWARD_COMPAT_TEMPLATES,
+    "gpt-5.6-luna-pro": _FORWARD_COMPAT_TEMPLATES,
     "gpt-5.5": ("gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"),
     "gpt-5.4-mini": ("gpt-5.3-codex",),
     "gpt-5.4": ("gpt-5.3-codex",),

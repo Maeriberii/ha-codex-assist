@@ -51,7 +51,19 @@ async def test_fetch_codex_model_ids_uses_codex_models_endpoint_and_priority_ord
 
     models = await fetch_codex_model_ids(http_client=http, access_token="token-1")
 
-    assert models == ["gpt-5.5", "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex-spark"]
+    assert models == [
+        "gpt-5.5",
+        "gpt-5.3-codex",
+        "gpt-5.6-sol",
+        "gpt-5.6-sol-pro",
+        "gpt-5.6-terra",
+        "gpt-5.6-terra-pro",
+        "gpt-5.6-luna",
+        "gpt-5.6-luna-pro",
+        "gpt-5.4-mini",
+        "gpt-5.4",
+        "gpt-5.3-codex-spark",
+    ]
     assert http.calls[0][0] == CODEX_MODELS_URL
     assert http.calls[0][1]["headers"]["Authorization"] == "Bearer token-1"
 
@@ -78,6 +90,12 @@ async def test_fetch_codex_model_ids_falls_back_without_token():
 def test_add_forward_compat_models_preserves_order_and_adds_known_codex_slugs():
     assert add_forward_compat_models(["gpt-5.3-codex"]) == [
         "gpt-5.3-codex",
+        "gpt-5.6-sol",
+        "gpt-5.6-sol-pro",
+        "gpt-5.6-terra",
+        "gpt-5.6-terra-pro",
+        "gpt-5.6-luna",
+        "gpt-5.6-luna-pro",
         "gpt-5.5",
         "gpt-5.4-mini",
         "gpt-5.4",
