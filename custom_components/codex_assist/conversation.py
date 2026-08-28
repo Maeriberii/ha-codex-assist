@@ -132,7 +132,7 @@ class CodexAssistConversationEntity(
             chat_log.async_add_assistant_content_without_tools(
                 conversation.AssistantContent(
                     agent_id=user_input.agent_id,
-                    content=f"Codex Assist failed: {err}",
+                    content=_request_failure_text(err),
                 )
             )
             return conversation.async_get_result_from_chat_log(user_input, chat_log)
@@ -227,7 +227,7 @@ class CodexAssistConversationEntity(
             )
         except (httpx.HTTPError, RuntimeError) as err:
             LOGGER.exception("Codex Assist model request failed")
-            text = f"Codex Assist failed: {err}"
+            text = _request_failure_text(err)
             chat_log.async_add_assistant_content_without_tools(
                 conversation.AssistantContent(
                     agent_id=user_input.agent_id,
@@ -247,6 +247,12 @@ class CodexAssistConversationEntity(
         result = conversation.async_get_result_from_chat_log(user_input, chat_log)
         _separate_citations_from_result_speech(result, citations, citation_footers)
         return result
+
+
+def _request_failure_text(err: BaseException) -> str:
+    """Return a useful user-facing failure even for blank transport errors."""
+    detail = str(err).strip() or type(err).__name__
+    return f"Codex Assist failed: {detail}"
 
 
 async def _stream_codex_turn_into_chat_log(

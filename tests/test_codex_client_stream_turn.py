@@ -3,6 +3,7 @@ import json
 import pytest
 
 from custom_components.codex_assist.codex_client import (
+    CODEX_STREAM_TIMEOUT,
     CodexCitationDelta,
     CodexClient,
     CodexRateLimitError,
@@ -78,6 +79,7 @@ async def test_stream_turn_yields_text_deltas_and_posts_advanced_options():
     assert payload["reasoning"] == {"effort": "medium", "summary": "auto"}
     assert payload["include"] == ["reasoning.encrypted_content"]
     assert payload["text"] == {"verbosity": "low"}
+    assert http.calls[0][2]["timeout"] == CODEX_STREAM_TIMEOUT
 
 
 @pytest.mark.asyncio

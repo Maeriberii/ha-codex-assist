@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
 import pytest
 
 from custom_components.codex_assist.codex_client import (
@@ -76,6 +77,15 @@ def conversation_module(monkeypatch):
     install_homeassistant_fakes(monkeypatch)
     module = importlib.import_module("custom_components.codex_assist.conversation")
     return importlib.reload(module)
+
+
+def test_request_failure_text_names_blank_transport_error(conversation_module):
+    assert conversation_module._request_failure_text(httpx.ReadTimeout("")) == (
+        "Codex Assist failed: ReadTimeout"
+    )
+    assert conversation_module._request_failure_text(RuntimeError("backend failed")) == (
+        "Codex Assist failed: backend failed"
+    )
 
 
 @pytest.mark.asyncio

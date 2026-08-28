@@ -9,6 +9,7 @@ from typing import Any, Protocol
 from .codex_image import image_model_quality, validate_image_size
 
 CODEX_BACKEND_BASE_URL = "https://chatgpt.com/backend-api/codex"
+CODEX_STREAM_TIMEOUT = 300
 
 
 class AsyncPostClient(Protocol):
@@ -163,6 +164,7 @@ class CodexClient:
             f"{self._base_url}/responses",
             headers=codex_headers(self._access_token),
             json=payload,
+            timeout=CODEX_STREAM_TIMEOUT,
         ) as response:
             if response.status_code != 200:
                 error = await _stream_response_error(response)
