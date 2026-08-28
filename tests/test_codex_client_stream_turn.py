@@ -8,6 +8,7 @@ from custom_components.codex_assist.codex_client import (
     CodexRateLimitError,
     CodexTextDelta,
     CodexToolCallDelta,
+    CodexWebSearchStartedDelta,
 )
 
 
@@ -171,6 +172,18 @@ async def test_stream_turn_yields_structured_web_citations_and_requests_sources(
         200,
         _event(
             {
+                "type": "response.output_item.added",
+                "item": {"type": "web_search_call", "id": "search-1"},
+            }
+        )
+        + _event(
+            {
+                "type": "response.web_search_call.searching",
+                "item_id": "search-1",
+            }
+        )
+        + _event(
+            {
                 "type": "response.output_text.annotation.added",
                 "annotation": citation,
             }
@@ -206,6 +219,7 @@ async def test_stream_turn_yields_structured_web_citations_and_requests_sources(
     ]
 
     citations = [delta.citation for delta in deltas if isinstance(delta, CodexCitationDelta)]
+    assert sum(isinstance(delta, CodexWebSearchStartedDelta) for delta in deltas) == 1
     assert [(citation.title, citation.url) for citation in citations] == [
         ("IANA Reserved Domains", "https://www.iana.org/help/example-domains"),
         ("IANA Reserved Domains", "https://www.iana.org/help/example-domains"),

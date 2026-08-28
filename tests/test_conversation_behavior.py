@@ -13,6 +13,7 @@ from custom_components.codex_assist.codex_client import (
     CodexTextDelta,
     CodexToolCall,
     CodexToolCallDelta,
+    CodexWebSearchStartedDelta,
 )
 from tests.ha_fakes import install_homeassistant_fakes
 
@@ -195,6 +196,26 @@ def test_codex_tools_adds_opt_in_web_search_without_ha_tools(conversation_module
     assert conversation_module._codex_tools_from_chat_log(
         FakeChatLog(), enable_web_search=True
     ) == [{"type": "web_search"}]
+
+
+@pytest.mark.asyncio
+async def test_web_search_start_emits_tts_acknowledgement_before_answer(conversation_module):
+    async def stream():
+        yield CodexWebSearchStartedDelta()
+        yield CodexTextDelta("The current answer follows.")
+
+    deltas = [
+        delta
+        async for delta in conversation_module._codex_stream_to_assistant_deltas(stream())
+    ]
+
+    acknowledgement = conversation_module._WEB_SEARCH_TTS_ACKNOWLEDGEMENT
+    assert len(acknowledgement) > 60
+    assert deltas == [
+        {"role": "assistant"},
+        {"content": acknowledgement},
+        {"content": "The current answer follows."},
+    ]
 
 
 @pytest.mark.asyncio

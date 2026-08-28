@@ -67,7 +67,17 @@ class CodexCitationDelta:
     citation: CodexCitation
 
 
-CodexStreamDelta = CodexTextDelta | CodexToolCallDelta | CodexCitationDelta
+@dataclass(frozen=True)
+class CodexWebSearchStartedDelta:
+    """Signal that the hosted web-search tool has started work."""
+
+
+CodexStreamDelta = (
+    CodexTextDelta
+    | CodexToolCallDelta
+    | CodexCitationDelta
+    | CodexWebSearchStartedDelta
+)
 
 
 class CodexClient:
@@ -179,10 +189,14 @@ class CodexClient:
             pending_tool_call: dict[str, Any] | None = None
             pending_arguments = ""
             completed_tool_call_ids: set[str] = set()
+            web_search_started = False
             async for event in _aiter_sse_events(response):
                 event_type = event.get("type")
                 for citation in _citations_from_event(event):
                     yield CodexCitationDelta(citation)
+                if not web_search_started and _is_web_search_started_event(event):
+                    web_search_started = True
+                    yield CodexWebSearchStartedDelta()
                 if event_type == "response.output_item.added":
                     item = event.get("item")
                     if isinstance(item, dict) and item.get("type") == "function_call":
@@ -714,6 +728,21 @@ def _citations_from_event(event: dict[str, Any]) -> list[CodexCitation]:
         for annotation in annotations
         if (citation := _citation_from_annotation(annotation)) is not None
     ]
+
+
+def _is_web_search_started_event(event: dict[str, Any]) -> bool:
+    event_type = event.get("type")
+    if event_type in {
+        "response.web_search_call.in_progress",
+        "response.web_search_call.searching",
+    }:
+        return True
+    item = event.get("item")
+    return (
+        event_type == "response.output_item.added"
+        and isinstance(item, dict)
+        and item.get("type") == "web_search_call"
+    )
 
 
 async def _aiter_sse_events(response: Any) -> AsyncIterator[dict[str, Any]]:
