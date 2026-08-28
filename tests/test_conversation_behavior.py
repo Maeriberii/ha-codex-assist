@@ -208,7 +208,7 @@ def test_codex_tools_adds_opt_in_web_search_without_ha_tools(conversation_module
 
 
 @pytest.mark.asyncio
-async def test_codex_stream_appends_deduplicated_safe_citation_footer(conversation_module):
+async def test_codex_stream_captures_citations_without_streaming_urls(conversation_module):
     async def stream():
         yield CodexTextDelta("IANA maintains the reserved domains.")
         citation = CodexCitation(
@@ -240,13 +240,6 @@ async def test_codex_stream_appends_deduplicated_safe_citation_footer(conversati
     assert deltas == [
         {"role": "assistant"},
         {"content": "IANA maintains the reserved domains."},
-        {
-            "content": (
-                "\n\nSources:\n"
-                "- IANA \\[Reserved\\] Domains — "
-                "<https://www.iana.org/help/example-domains>"
-            )
-        },
     ]
     assert captured == [
         CodexCitation(
@@ -258,17 +251,10 @@ async def test_codex_stream_appends_deduplicated_safe_citation_footer(conversati
     ]
 
 
-def test_citation_result_keeps_sources_in_card_but_not_speech(conversation_module):
+def test_citation_result_keeps_sources_in_card_without_changing_speech(conversation_module):
     class Response:
         def __init__(self):
-            self.speech = {
-                "plain": {
-                    "speech": (
-                        "IANA maintains the reserved domains. Sources: IANA.\n\nSources:\n"
-                        "- IANA — <https://www.iana.org/help/example-domains>"
-                    )
-                }
-            }
+            self.speech = {"plain": {"speech": "IANA maintains the reserved domains."}}
             self.card = {}
 
         def async_set_card(self, title, content):
@@ -283,16 +269,11 @@ def test_citation_result_keeps_sources_in_card_but_not_speech(conversation_modul
             end_index=4,
         )
     ]
-    footer = conversation_module._citation_footer(citations)
 
-    conversation_module._separate_citations_from_result_speech(
-        result,
-        citations,
-        [footer],
-    )
+    conversation_module._attach_citations_card(result, citations)
 
     assert result.response.speech["plain"]["speech"] == (
-        "IANA maintains the reserved domains. Sources: IANA."
+        "IANA maintains the reserved domains."
     )
     assert result.response.card["simple"] == {
         "title": "Sources",
@@ -300,55 +281,22 @@ def test_citation_result_keeps_sources_in_card_but_not_speech(conversation_modul
     }
 
 
-def test_citation_result_strips_exact_final_turn_footer_after_tool_iteration(
-    conversation_module,
-):
-    class Response:
-        def __init__(self):
-            self.speech = {
-                "plain": {
-                    "speech": (
-                        "The porch light is now on.\n\nSources:\n"
-                        "- Final source — <https://example.com/final>"
-                    )
-                }
-            }
-            self.card = {}
+def test_web_search_instructions_suppress_spoken_source_urls(conversation_module):
+    chat_log = FakeChatLog([FakeContent(role="system", content="Be concise.")])
 
-        def async_set_card(self, title, content):
-            self.card["simple"] = {"title": title, "content": content}
-
-    result = type("Result", (), {"response": Response()})()
-    first_turn = CodexCitation(
-        title="First source",
-        url="https://example.com/first",
-        start_index=0,
-        end_index=4,
+    assert (
+        conversation_module._instructions_for_turn(
+            chat_log, "fallback", web_search=False
+        )
+        == "Be concise."
     )
-    final_turn = CodexCitation(
-        title="Final source",
-        url="https://example.com/final",
-        start_index=0,
-        end_index=4,
+    instructions = conversation_module._instructions_for_turn(
+        chat_log, "fallback", web_search=True
     )
 
-    conversation_module._separate_citations_from_result_speech(
-        result,
-        [first_turn, final_turn],
-        [
-            conversation_module._citation_footer([first_turn]),
-            conversation_module._citation_footer([final_turn]),
-        ],
-    )
-
-    assert result.response.speech["plain"]["speech"] == "The porch light is now on."
-    assert result.response.card["simple"] == {
-        "title": "Sources",
-        "content": (
-            "- First source — <https://example.com/first>\n"
-            "- Final source — <https://example.com/final>"
-        ),
-    }
+    assert instructions.startswith("Be concise.\n\n")
+    assert "do not include raw URLs" in instructions
+    assert "renders structured citations separately" in instructions
 
 
 @pytest.mark.asyncio
