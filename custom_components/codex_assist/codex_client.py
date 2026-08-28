@@ -54,7 +54,20 @@ class CodexToolCallDelta:
     tool_call: CodexToolCall
 
 
-CodexStreamDelta = CodexTextDelta | CodexToolCallDelta
+@dataclass(frozen=True)
+class CodexCitation:
+    title: str
+    url: str
+    start_index: int | None = None
+    end_index: int | None = None
+
+
+@dataclass(frozen=True)
+class CodexCitationDelta:
+    citation: CodexCitation
+
+
+CodexStreamDelta = CodexTextDelta | CodexToolCallDelta | CodexCitationDelta
 
 
 class CodexClient:
@@ -106,9 +119,7 @@ class CodexClient:
         if response.status_code != 200:
             error = _response_error(response)
             if response.status_code == 401 or error.code == "token_invalidated":
-                raise CodexAuthenticationError(
-                    f"Codex authentication failed: {error.detail}"
-                )
+                raise CodexAuthenticationError(f"Codex authentication failed: {error.detail}")
             if _is_rate_limit_response(response.status_code, error):
                 raise CodexRateLimitError(
                     f"Codex usage limit or rate limit reached: {error.detail}"
@@ -156,9 +167,7 @@ class CodexClient:
             if response.status_code != 200:
                 error = await _stream_response_error(response)
                 if response.status_code == 401 or error.code == "token_invalidated":
-                    raise CodexAuthenticationError(
-                        f"Codex authentication failed: {error.detail}"
-                    )
+                    raise CodexAuthenticationError(f"Codex authentication failed: {error.detail}")
                 if _is_rate_limit_response(response.status_code, error):
                     raise CodexRateLimitError(
                         f"Codex usage limit or rate limit reached: {error.detail}"
@@ -172,6 +181,8 @@ class CodexClient:
             completed_tool_call_ids: set[str] = set()
             async for event in _aiter_sse_events(response):
                 event_type = event.get("type")
+                for citation in _citations_from_event(event):
+                    yield CodexCitationDelta(citation)
                 if event_type == "response.output_item.added":
                     item = event.get("item")
                     if isinstance(item, dict) and item.get("type") == "function_call":
@@ -188,9 +199,7 @@ class CodexClient:
                     if isinstance(arguments, str):
                         pending_arguments = arguments
                     if pending_tool_call is not None:
-                        tool_call = _tool_call_from_item(
-                            pending_tool_call, pending_arguments
-                        )
+                        tool_call = _tool_call_from_item(pending_tool_call, pending_arguments)
                         completed_tool_call_ids.add(tool_call.id)
                         yield CodexToolCallDelta(tool_call)
                         pending_tool_call = None
@@ -237,9 +246,7 @@ class CodexClient:
             if response.status_code != 200:
                 error = await _stream_response_error(response)
                 if response.status_code == 401 or error.code == "token_invalidated":
-                    raise CodexAuthenticationError(
-                        f"Codex authentication failed: {error.detail}"
-                    )
+                    raise CodexAuthenticationError(f"Codex authentication failed: {error.detail}")
                 if _is_rate_limit_response(response.status_code, error):
                     raise CodexRateLimitError(
                         f"Codex usage limit or rate limit reached: {error.detail}"
@@ -292,19 +299,24 @@ def _responses_payload(
     }
     if tools:
         payload["tools"] = tools
+    include: list[str] = []
+    if any(tool.get("type") == "web_search" for tool in tools or []):
+        include.append("web_search_call.action.sources")
     text_options: dict[str, Any] = {}
     if _supports_reasoning_options(model):
         if reasoning_effort:
             payload["reasoning"] = {"effort": reasoning_effort}
             if reasoning_summary and reasoning_summary != "off":
                 payload["reasoning"]["summary"] = reasoning_summary
-            payload["include"] = ["reasoning.encrypted_content"]
+            include.insert(0, "reasoning.encrypted_content")
         if text_verbosity:
             text_options["verbosity"] = text_verbosity
     if text_format:
         text_options["format"] = text_format
     if text_options:
         payload["text"] = text_options
+    if include:
+        payload["include"] = include
     return payload
 
 
@@ -351,7 +363,6 @@ def _image_generation_payload(
         },
         "stream": True,
     }
-
 
 
 def _extract_image_b64(value: Any) -> str | None:
@@ -433,9 +444,7 @@ def _chatgpt_account_id(access_token: str) -> str | None:
             return None
         payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
         claims = json.loads(base64.urlsafe_b64decode(payload_b64))
-        account_id = claims.get("https://api.openai.com/auth", {}).get(
-            "chatgpt_account_id"
-        )
+        account_id = claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
     except Exception:
         return None
     return account_id if isinstance(account_id, str) and account_id else None
@@ -513,9 +522,7 @@ def extract_streamed_turn_result(stream_text: str) -> CodexTurnResult:
             item = event.get("item")
             if isinstance(item, dict):
                 if item.get("type") == "function_call":
-                    tool_calls.append(
-                        _tool_call_from_item(item, str(item.get("arguments") or ""))
-                    )
+                    tool_calls.append(_tool_call_from_item(item, str(item.get("arguments") or "")))
                 else:
                     done_parts.append(extract_output_text({"output": [item]}))
 
@@ -626,9 +633,7 @@ def _stream_event_exception(event: dict[str, Any]) -> RuntimeError | None:
     if error.code == "token_invalidated":
         return CodexAuthenticationError(f"Codex authentication failed: {error.detail}")
     if _is_rate_limit_response(200, error):
-        return CodexRateLimitError(
-            f"Codex usage limit or rate limit reached: {error.detail}"
-        )
+        return CodexRateLimitError(f"Codex usage limit or rate limit reached: {error.detail}")
     return RuntimeError(f"Codex stream failed: {error.detail}")
 
 
@@ -673,6 +678,42 @@ def _tool_call_from_item(item: dict[str, Any], arguments: str) -> CodexToolCall:
         arguments=parsed_arguments,
     )
 
+
+def _citation_from_annotation(annotation: Any) -> CodexCitation | None:
+    if not isinstance(annotation, dict) or annotation.get("type") != "url_citation":
+        return None
+    title = annotation.get("title")
+    url = annotation.get("url")
+    if not isinstance(title, str) or not title.strip():
+        return None
+    if not isinstance(url, str) or not url.strip():
+        return None
+    start_index = annotation.get("start_index")
+    end_index = annotation.get("end_index")
+    return CodexCitation(
+        title=title.strip(),
+        url=url.strip(),
+        start_index=start_index if isinstance(start_index, int) else None,
+        end_index=end_index if isinstance(end_index, int) else None,
+    )
+
+
+def _citations_from_event(event: dict[str, Any]) -> list[CodexCitation]:
+    annotations: list[Any] = []
+    if event.get("type") == "response.output_text.annotation.added":
+        annotations.append(event.get("annotation"))
+
+    item = event.get("item")
+    if isinstance(item, dict):
+        for content in item.get("content") or []:
+            if isinstance(content, dict):
+                annotations.extend(content.get("annotations") or [])
+
+    return [
+        citation
+        for annotation in annotations
+        if (citation := _citation_from_annotation(annotation)) is not None
+    ]
 
 
 async def _aiter_sse_events(response: Any) -> AsyncIterator[dict[str, Any]]:

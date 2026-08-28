@@ -27,6 +27,8 @@ Codex Assist uses Home Assistant's normal Assist LLM API and exposed-entity cont
 
 The important boundary is: Codex / ChatGPT may request an action, but Codex Assist must route that request through Home Assistant's Assist LLM API. Home Assistant then limits execution to the entities exposed to Assist.
 
+Hosted web search is disabled by default. When enabled, the Codex backend may use the current model turn—including the conversation context already supplied for Assist—to formulate a search. Codex Assist does not add a separate location feed or bypass Home Assistant's exposed-entity boundary. Citation links are accepted only from structured backend annotations and must use validated HTTP(S) URLs before they are displayed.
+
 ## Entity exposure guidance
 
 Only expose entities you intentionally want an Assist conversation agent to read or control.

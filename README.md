@@ -41,7 +41,8 @@ Codex Assist is included in HACS by default; you do not need to add this GitHub 
 - Let Home Assistant's Assist exposed-entity controls define what the agent can see or control.
 - Ask about exposed entity state and request simple actions in the same Assist chat.
 - Stream replies in Assist while Codex is answering.
-- Configure model, prompt, reasoning effort, reasoning summary, and text verbosity from the integration options flow.
+- Optionally enable hosted web search. Search is off by default; displayed results retain validated source links while spoken responses omit the generated source footer.
+- Configure model, prompt, reasoning effort, reasoning summary, text verbosity, and web search from the integration options flow.
 - Use Home Assistant AI Task for structured data generation, attachment-aware prompts, and subscription-backed image generation with curated image quality and size controls.
 
 <p align="center">
@@ -57,6 +58,8 @@ Codex Assist is included in HACS by default; you do not need to add this GitHub 
 Codex Assist does **not** expose a raw “call any Home Assistant service” bridge. It routes control through Home Assistant's Assist LLM API, so your **Assist exposed entities** list is the practical safety boundary.
 
 Start with harmless lights or read-only questions. Keep locks, alarms, garage doors, water shutoff valves, covers, and other sensitive devices unexposed unless you deliberately want Assist control there.
+
+Hosted web search sends the current model turn to the Codex backend when enabled. Codex Assist does not automatically add Home Assistant state, attachments, location, or tool results to a search request beyond the conversation context already needed for that turn. Structured AI Tasks keep web search disabled so citation text cannot corrupt schema-constrained output.
 
 ## User guide
 

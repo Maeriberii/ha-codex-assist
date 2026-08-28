@@ -4,6 +4,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Callable
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from homeassistant.components import conversation
@@ -24,6 +25,8 @@ from .codex_auth import (
 )
 from .codex_client import (
     CodexAuthenticationError,
+    CodexCitation,
+    CodexCitationDelta,
     CodexClient,
     CodexRateLimitError,
     CodexStreamDelta,
@@ -33,9 +36,11 @@ from .codex_client import (
 )
 from .codex_runtime import runtime_token_coordinator
 from .config_flow import (
+    CONF_WEB_SEARCH,
     DEFAULT_REASONING_EFFORT,
     DEFAULT_REASONING_SUMMARY,
     DEFAULT_TEXT_VERBOSITY,
+    DEFAULT_WEB_SEARCH,
 )
 
 MAX_TOOL_ITERATIONS = 5
@@ -43,6 +48,7 @@ MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_ATTACHMENTS = 4
 MAX_TOTAL_IMAGE_ATTACHMENT_BYTES = 20 * 1024 * 1024
 LOGGER = logging.getLogger(__name__)
+_SOURCES_SEPARATOR = "\n\nSources:\n"
 
 
 async def async_setup_entry(
@@ -92,6 +98,9 @@ class CodexAssistConversationEntity(
         reasoning_effort = settings.get("reasoning_effort", DEFAULT_REASONING_EFFORT)
         reasoning_summary = settings.get("reasoning_summary", DEFAULT_REASONING_SUMMARY)
         text_verbosity = settings.get("text_verbosity", DEFAULT_TEXT_VERBOSITY)
+        web_search = bool(settings.get(CONF_WEB_SEARCH, DEFAULT_WEB_SEARCH))
+        citations: list[CodexCitation] = []
+        citation_footers: list[str] = []
 
         response = intent.IntentResponse(language=user_input.language)
         try:
@@ -139,10 +148,12 @@ class CodexAssistConversationEntity(
                         model=model,
                         instructions=_instructions_from_chat_log(chat_log, prompt),
                         input_items=await _codex_input_from_chat_log(self.hass, chat_log),
-                        tools=_codex_tools_from_chat_log(chat_log),
+                        tools=_codex_tools_from_chat_log(chat_log, enable_web_search=web_search),
                         reasoning_effort=reasoning_effort,
                         reasoning_summary=reasoning_summary,
                         text_verbosity=text_verbosity,
+                        citation_sink=citations,
+                        citation_footer_sink=citation_footers,
                     )
                 except CodexAuthenticationError as err:
                     LOGGER.warning(
@@ -179,10 +190,14 @@ class CodexAssistConversationEntity(
                             model=model,
                             instructions=_instructions_from_chat_log(chat_log, prompt),
                             input_items=await _codex_input_from_chat_log(self.hass, chat_log),
-                            tools=_codex_tools_from_chat_log(chat_log),
+                            tools=_codex_tools_from_chat_log(
+                                chat_log, enable_web_search=web_search
+                            ),
                             reasoning_effort=reasoning_effort,
                             reasoning_summary=reasoning_summary,
                             text_verbosity=text_verbosity,
+                            citation_sink=citations,
+                            citation_footer_sink=citation_footers,
                         )
                     except CodexAuthenticationError as retry_err:
                         LOGGER.warning(
@@ -229,7 +244,9 @@ class CodexAssistConversationEntity(
                 )
             )
 
-        return conversation.async_get_result_from_chat_log(user_input, chat_log)
+        result = conversation.async_get_result_from_chat_log(user_input, chat_log)
+        _separate_citations_from_result_speech(result, citations, citation_footers)
+        return result
 
 
 async def _stream_codex_turn_into_chat_log(
@@ -245,6 +262,8 @@ async def _stream_codex_turn_into_chat_log(
     reasoning_summary: str,
     text_verbosity: str,
     text_format: dict[str, Any] | None = None,
+    citation_sink: list[CodexCitation] | None = None,
+    citation_footer_sink: list[str] | None = None,
 ) -> bool:
     tool_call_requested = False
 
@@ -266,6 +285,8 @@ async def _stream_codex_turn_into_chat_log(
                 text_format=text_format,
             ),
             on_tool_call=mark_tool_call_requested,
+            citation_sink=citation_sink,
+            citation_footer_sink=citation_footer_sink,
         ),
     ):
         pass
@@ -276,9 +297,23 @@ async def _codex_stream_to_assistant_deltas(
     stream: AsyncIterator[CodexStreamDelta],
     *,
     on_tool_call: Callable[[], None] | None = None,
+    citation_sink: list[CodexCitation] | None = None,
+    citation_footer_sink: list[str] | None = None,
 ) -> AsyncIterator[AssistantContentDeltaDict]:
     started = False
+    citations: list[CodexCitation] = []
+    seen_urls: set[str] = set()
     async for delta in stream:
+        if isinstance(delta, CodexCitationDelta):
+            citation = _safe_citation(delta.citation)
+            if citation is not None and citation.url not in seen_urls:
+                seen_urls.add(citation.url)
+                citations.append(citation)
+                if citation_sink is not None and all(
+                    existing.url != citation.url for existing in citation_sink
+                ):
+                    citation_sink.append(citation)
+            continue
         if not started:
             yield {"role": "assistant"}
             started = True
@@ -296,6 +331,71 @@ async def _codex_stream_to_assistant_deltas(
                     )
                 ]
             }
+    if citations:
+        if not started:
+            yield {"role": "assistant"}
+        footer = _citation_footer(citations)
+        if citation_footer_sink is not None:
+            citation_footer_sink.append(footer)
+        yield {"content": footer}
+
+
+def _safe_citation(citation: CodexCitation) -> CodexCitation | None:
+    if len(citation.url) > 2048:
+        return None
+    if any(character.isspace() or ord(character) < 32 for character in citation.url):
+        return None
+    try:
+        parsed = urlsplit(citation.url)
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    if "<" in citation.url or ">" in citation.url:
+        return None
+    title = " ".join(citation.title.split())[:200]
+    if not title:
+        return None
+    title = (
+        title.replace("\\", "\\\\")
+        .replace("[", "\\[")
+        .replace("]", "\\]")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+    return CodexCitation(
+        title=title,
+        url=citation.url,
+        start_index=citation.start_index,
+        end_index=citation.end_index,
+    )
+
+
+def _citation_lines(citations: list[CodexCitation]) -> str:
+    return "\n".join(f"- {citation.title} — <{citation.url}>" for citation in citations)
+
+
+def _citation_footer(citations: list[CodexCitation]) -> str:
+    return f"{_SOURCES_SEPARATOR}{_citation_lines(citations)}"
+
+
+def _separate_citations_from_result_speech(
+    result: conversation.ConversationResult,
+    citations: list[CodexCitation],
+    citation_footers: list[str],
+) -> None:
+    if not citations:
+        return
+    response = result.response
+    speech = getattr(response, "speech", None)
+    if isinstance(speech, dict):
+        plain = speech.get("plain")
+        if isinstance(plain, dict) and isinstance(plain.get("speech"), str):
+            for footer in reversed(citation_footers):
+                if plain["speech"].endswith(footer):
+                    plain["speech"] = plain["speech"].removesuffix(footer).rstrip()
+                    break
+    response.async_set_card("Sources", _citation_lines(citations))
 
 
 async def _refresh_runtime_tokens(
@@ -406,8 +506,7 @@ def _trim_codex_input_items(
     return [
         item
         for item in trimmed
-        if item.get("type") != "function_call_output"
-        or str(item.get("call_id")) in included_calls
+        if item.get("type") != "function_call_output" or str(item.get("call_id")) in included_calls
     ]
 
 
@@ -444,9 +543,7 @@ def _image_attachments_for_codex(attachments: Any) -> list[tuple[str, bytes]]:
         candidates.append((mime_type, path, size))
 
     if len(candidates) > MAX_IMAGE_ATTACHMENTS:
-        raise ValueError(
-            f"Codex Assist accepts at most {MAX_IMAGE_ATTACHMENTS} image attachments"
-        )
+        raise ValueError(f"Codex Assist accepts at most {MAX_IMAGE_ATTACHMENTS} image attachments")
     if sum(size for _, _, size in candidates) > MAX_TOTAL_IMAGE_ATTACHMENT_BYTES:
         raise ValueError("Codex Assist image attachments exceed the total attachment size limit")
 
@@ -472,14 +569,20 @@ def _image_attachments_for_codex(attachments: Any) -> list[tuple[str, bytes]]:
     return images
 
 
-def _codex_tools_from_chat_log(chat_log: conversation.ChatLog) -> list[dict[str, Any]]:
-    if not chat_log.llm_api:
-        return []
-
-    return [
-        _codex_tool_from_ha_tool(tool, chat_log.llm_api.custom_serializer)
-        for tool in chat_log.llm_api.tools
-    ]
+def _codex_tools_from_chat_log(
+    chat_log: conversation.ChatLog,
+    *,
+    enable_web_search: bool = False,
+) -> list[dict[str, Any]]:
+    tools: list[dict[str, Any]] = []
+    if chat_log.llm_api:
+        tools.extend(
+            _codex_tool_from_ha_tool(tool, chat_log.llm_api.custom_serializer)
+            for tool in chat_log.llm_api.tools
+        )
+    if enable_web_search:
+        tools.append({"type": "web_search"})
+    return tools
 
 
 def _codex_tool_from_ha_tool(

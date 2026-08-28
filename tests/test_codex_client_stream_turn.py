@@ -3,6 +3,7 @@ import json
 import pytest
 
 from custom_components.codex_assist.codex_client import (
+    CodexCitationDelta,
     CodexClient,
     CodexRateLimitError,
     CodexTextDelta,
@@ -155,6 +156,64 @@ async def test_stream_turn_yields_function_call_after_arguments_complete():
     assert tool_delta.tool_call.id == "call-1"
     assert tool_delta.tool_call.name == "HassTurnOn"
     assert tool_delta.tool_call.arguments == {"name": "Kitchen", "domain": "light"}
+
+
+@pytest.mark.asyncio
+async def test_stream_turn_yields_structured_web_citations_and_requests_sources():
+    citation = {
+        "type": "url_citation",
+        "title": "IANA Reserved Domains",
+        "url": "https://www.iana.org/help/example-domains",
+        "start_index": 10,
+        "end_index": 22,
+    }
+    response = FakeStreamResponse(
+        200,
+        _event(
+            {
+                "type": "response.output_text.annotation.added",
+                "annotation": citation,
+            }
+        )
+        + _event(
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "Example Domains are maintained by IANA.",
+                            "annotations": [citation],
+                        }
+                    ],
+                },
+            }
+        ),
+    )
+    http = FakeHttpClient(response)
+    client = CodexClient(http_client=http, access_token="token-1")
+
+    deltas = [
+        delta
+        async for delta in client.stream_turn(
+            model="gpt-5.4",
+            instructions="Use search.",
+            input_items=[{"role": "user", "content": "Who maintains Example Domains?"}],
+            tools=[{"type": "web_search"}],
+            reasoning_effort="low",
+        )
+    ]
+
+    citations = [delta.citation for delta in deltas if isinstance(delta, CodexCitationDelta)]
+    assert [(citation.title, citation.url) for citation in citations] == [
+        ("IANA Reserved Domains", "https://www.iana.org/help/example-domains"),
+        ("IANA Reserved Domains", "https://www.iana.org/help/example-domains"),
+    ]
+    assert http.calls[0][2]["json"]["include"] == [
+        "reasoning.encrypted_content",
+        "web_search_call.action.sources",
+    ]
 
 
 @pytest.mark.asyncio

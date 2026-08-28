@@ -29,9 +29,11 @@ from .codex_client import (
 from .codex_image import DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_SIZE, image_size_dimensions
 from .codex_runtime import runtime_token_coordinator
 from .config_flow import (
+    CONF_WEB_SEARCH,
     DEFAULT_REASONING_EFFORT,
     DEFAULT_REASONING_SUMMARY,
     DEFAULT_TEXT_VERBOSITY,
+    DEFAULT_WEB_SEARCH,
 )
 from .conversation import (
     MAX_TOOL_ITERATIONS,
@@ -98,6 +100,7 @@ class CodexAssistAITaskEntity(ai_task.AITaskEntity):
         reasoning_effort = settings.get("reasoning_effort", DEFAULT_REASONING_EFFORT)
         reasoning_summary = settings.get("reasoning_summary", DEFAULT_REASONING_SUMMARY)
         text_verbosity = settings.get("text_verbosity", DEFAULT_TEXT_VERBOSITY)
+        web_search = bool(settings.get(CONF_WEB_SEARCH, DEFAULT_WEB_SEARCH))
 
         http_client = get_async_client(self.hass)
         auth_client = CodexAuthClient(http_client=http_client)
@@ -138,6 +141,7 @@ class CodexAssistAITaskEntity(ai_task.AITaskEntity):
                 reasoning_summary=reasoning_summary,
                 text_verbosity=text_verbosity,
                 text_format=text_format,
+                web_search=web_search,
             )
         except CodexRateLimitError as err:
             LOGGER.warning("Codex Assist AI Task hit usage or rate limit: %s", err)
@@ -235,9 +239,7 @@ class CodexAssistAITaskEntity(ai_task.AITaskEntity):
             raise HomeAssistantError(f"Codex Assist image generation failed: {err}") from err
         except (ValueError, TypeError) as err:
             LOGGER.exception("Codex Assist AI Task image response handling failed")
-            raise HomeAssistantError(
-                f"Codex Assist image response handling failed: {err}"
-            ) from err
+            raise HomeAssistantError(f"Codex Assist image response handling failed: {err}") from err
 
         chat_log.async_add_assistant_content_without_tools(
             conversation.AssistantContent(
@@ -273,6 +275,7 @@ async def _run_codex_ai_task_chat_log(
     reasoning_summary: str,
     text_verbosity: str,
     text_format: dict[str, Any] | None = None,
+    web_search: bool = False,
 ) -> None:
     """Run Codex over an AI Task chat log with one auth refresh retry."""
     for _iteration in range(MAX_TOOL_ITERATIONS):
@@ -284,7 +287,10 @@ async def _run_codex_ai_task_chat_log(
                 model=model,
                 instructions=_instructions_from_chat_log(chat_log, prompt),
                 input_items=await _codex_input_from_chat_log(hass, chat_log),
-                tools=_codex_tools_from_chat_log(chat_log),
+                tools=_codex_tools_from_chat_log(
+                    chat_log,
+                    enable_web_search=_web_search_enabled(web_search, text_format=text_format),
+                ),
                 reasoning_effort=reasoning_effort,
                 reasoning_summary=reasoning_summary,
                 text_verbosity=text_verbosity,
@@ -311,7 +317,10 @@ async def _run_codex_ai_task_chat_log(
                     model=model,
                     instructions=_instructions_from_chat_log(chat_log, prompt),
                     input_items=await _codex_input_from_chat_log(hass, chat_log),
-                    tools=_codex_tools_from_chat_log(chat_log),
+                    tools=_codex_tools_from_chat_log(
+                        chat_log,
+                        enable_web_search=_web_search_enabled(web_search, text_format=text_format),
+                    ),
                     reasoning_effort=reasoning_effort,
                     reasoning_summary=reasoning_summary,
                     text_verbosity=text_verbosity,
@@ -372,6 +381,15 @@ async def _generate_codex_ai_task_image(
             ) from retry_err
 
 
+def _web_search_enabled(
+    configured: bool,
+    *,
+    text_format: dict[str, Any] | None,
+) -> bool:
+    """Enable search only when citations cannot corrupt structured output."""
+    return configured and text_format is None
+
+
 def _structured_output_format(
     task: ai_task.GenDataTask,
     chat_log: conversation.ChatLog,
@@ -379,9 +397,7 @@ def _structured_output_format(
     """Convert the Home Assistant AI Task structure to a Responses text format."""
     if not task.structure:
         return None
-    custom_serializer = (
-        chat_log.llm_api.custom_serializer if chat_log.llm_api is not None else None
-    )
+    custom_serializer = chat_log.llm_api.custom_serializer if chat_log.llm_api is not None else None
     return {
         "type": "json_schema",
         "name": _structured_output_name(task.name),

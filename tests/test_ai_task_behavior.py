@@ -100,6 +100,12 @@ def test_structured_output_format_normalizes_api_name(ai_task_module, name, expe
     assert ai_task_module._structured_output_format(task, chat_log)["name"] == expected
 
 
+def test_ai_task_web_search_is_disabled_for_structured_output(ai_task_module):
+    assert ai_task_module._web_search_enabled(True, text_format=None) is True
+    assert ai_task_module._web_search_enabled(True, text_format={"type": "json_schema"}) is False
+    assert ai_task_module._web_search_enabled(False, text_format=None) is False
+
+
 @pytest.mark.asyncio
 async def test_ai_task_generate_data_reports_temporary_auth_without_reauth(
     ai_task_module,
@@ -126,6 +132,7 @@ async def test_ai_task_generate_data_reports_temporary_auth_without_reauth(
     )()
     task = type("Task", (), {"structure": None})()
     chat_log = type("ChatLog", (), {})()
+
     class FailingCoordinator:
         async def resolve(self, *args, **kwargs):
             return await fail_temporarily()

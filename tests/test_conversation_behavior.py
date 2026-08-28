@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from custom_components.codex_assist.codex_client import (
+    CodexCitation,
+    CodexCitationDelta,
     CodexTextDelta,
     CodexToolCall,
     CodexToolCallDelta,
@@ -181,6 +183,162 @@ def test_codex_tools_from_chat_log_converts_ha_llm_api_tools(conversation_module
             "strict": False,
         }
     ]
+    assert conversation_module._codex_tools_from_chat_log(
+        FakeChatLog(llm_api=llm_api), enable_web_search=True
+    ) == [*result, {"type": "web_search"}]
+
+
+def test_codex_tools_adds_opt_in_web_search_without_ha_tools(conversation_module):
+    assert (
+        conversation_module._codex_tools_from_chat_log(FakeChatLog(), enable_web_search=False) == []
+    )
+    assert conversation_module._codex_tools_from_chat_log(
+        FakeChatLog(), enable_web_search=True
+    ) == [{"type": "web_search"}]
+
+
+@pytest.mark.asyncio
+async def test_codex_stream_appends_deduplicated_safe_citation_footer(conversation_module):
+    async def stream():
+        yield CodexTextDelta("IANA maintains the reserved domains.")
+        citation = CodexCitation(
+            title="IANA [Reserved] Domains",
+            url="https://www.iana.org/help/example-domains",
+            start_index=0,
+            end_index=4,
+        )
+        yield CodexCitationDelta(citation)
+        yield CodexCitationDelta(citation)
+        yield CodexCitationDelta(
+            CodexCitation(
+                title="Unsafe",
+                url="javascript:alert(1)",
+                start_index=0,
+                end_index=4,
+            )
+        )
+
+    captured = []
+    deltas = [
+        delta
+        async for delta in conversation_module._codex_stream_to_assistant_deltas(
+            stream(),
+            citation_sink=captured,
+        )
+    ]
+
+    assert deltas == [
+        {"role": "assistant"},
+        {"content": "IANA maintains the reserved domains."},
+        {
+            "content": (
+                "\n\nSources:\n"
+                "- IANA \\[Reserved\\] Domains — "
+                "<https://www.iana.org/help/example-domains>"
+            )
+        },
+    ]
+    assert captured == [
+        CodexCitation(
+            title="IANA \\[Reserved\\] Domains",
+            url="https://www.iana.org/help/example-domains",
+            start_index=0,
+            end_index=4,
+        )
+    ]
+
+
+def test_citation_result_keeps_sources_in_card_but_not_speech(conversation_module):
+    class Response:
+        def __init__(self):
+            self.speech = {
+                "plain": {
+                    "speech": (
+                        "IANA maintains the reserved domains. Sources: IANA.\n\nSources:\n"
+                        "- IANA — <https://www.iana.org/help/example-domains>"
+                    )
+                }
+            }
+            self.card = {}
+
+        def async_set_card(self, title, content):
+            self.card["simple"] = {"title": title, "content": content}
+
+    result = type("Result", (), {"response": Response()})()
+    citations = [
+        CodexCitation(
+            title="IANA",
+            url="https://www.iana.org/help/example-domains",
+            start_index=0,
+            end_index=4,
+        )
+    ]
+    footer = conversation_module._citation_footer(citations)
+
+    conversation_module._separate_citations_from_result_speech(
+        result,
+        citations,
+        [footer],
+    )
+
+    assert result.response.speech["plain"]["speech"] == (
+        "IANA maintains the reserved domains. Sources: IANA."
+    )
+    assert result.response.card["simple"] == {
+        "title": "Sources",
+        "content": "- IANA — <https://www.iana.org/help/example-domains>",
+    }
+
+
+def test_citation_result_strips_exact_final_turn_footer_after_tool_iteration(
+    conversation_module,
+):
+    class Response:
+        def __init__(self):
+            self.speech = {
+                "plain": {
+                    "speech": (
+                        "The porch light is now on.\n\nSources:\n"
+                        "- Final source — <https://example.com/final>"
+                    )
+                }
+            }
+            self.card = {}
+
+        def async_set_card(self, title, content):
+            self.card["simple"] = {"title": title, "content": content}
+
+    result = type("Result", (), {"response": Response()})()
+    first_turn = CodexCitation(
+        title="First source",
+        url="https://example.com/first",
+        start_index=0,
+        end_index=4,
+    )
+    final_turn = CodexCitation(
+        title="Final source",
+        url="https://example.com/final",
+        start_index=0,
+        end_index=4,
+    )
+
+    conversation_module._separate_citations_from_result_speech(
+        result,
+        [first_turn, final_turn],
+        [
+            conversation_module._citation_footer([first_turn]),
+            conversation_module._citation_footer([final_turn]),
+        ],
+    )
+
+    assert result.response.speech["plain"]["speech"] == "The porch light is now on."
+    assert result.response.card["simple"] == {
+        "title": "Sources",
+        "content": (
+            "- First source — <https://example.com/first>\n"
+            "- Final source — <https://example.com/final>"
+        ),
+    }
 
 
 @pytest.mark.asyncio

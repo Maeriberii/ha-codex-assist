@@ -1,6 +1,6 @@
 # Codex hosted web-search contract spike
 
-Status: **request/protocol evidence captured; live Codex-backend acceptance still requires a Codex Assist-owned OAuth grant.**
+Status: **fixture-backed implementation exists on the feature branch; live Codex-backend acceptance still requires a Codex Assist-owned OAuth grant.**
 
 Foundation checkpoint: `d8e2197` (`Harden Codex runtime contracts`)
 
@@ -74,7 +74,7 @@ Do not source that token from Codex CLI, an editor, or another assistant. The pr
 
 ## Decision
 
-**Proceed with web search, but do not port the fork directly.** The likely implementation is small at the request seam, default-off, and can coexist with HA tools. Before user-facing implementation, obtain one dedicated Codex Assist OAuth authorization and run the sanitized probe to establish:
+**Proceed with web search, but do not port the fork directly.** The implementation is small at the request seam, default-off, and coexists with HA tools in fixture and real-Home-Assistant contract tests. Before release or claiming backend compatibility, obtain one dedicated Codex Assist OAuth authorization and run the sanitized probe to establish:
 
 1. whether the ChatGPT Codex backend accepts `web_search` for supported models/plans;
 2. exact progress/output/annotation events it emits;
