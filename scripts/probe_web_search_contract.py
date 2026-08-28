@@ -43,10 +43,12 @@ def probe_payload(model: str) -> dict[str, Any]:
         "tools": [
             {
                 "type": "web_search",
+                "external_web_access": True,
                 "filters": {"allowed_domains": ["iana.org"]},
                 "search_context_size": "low",
             }
         ],
+        "include": ["web_search_call.action.sources"],
         "stream": True,
         "store": False,
     }

@@ -23,10 +23,12 @@ def test_probe_payload_is_fixed_and_data_minimized() -> None:
     assert payload["tools"] == [
         {
             "type": "web_search",
+            "external_web_access": True,
             "filters": {"allowed_domains": ["iana.org"]},
             "search_context_size": "low",
         }
     ]
+    assert payload["include"] == ["web_search_call.action.sources"]
     assert payload["store"] is False
     assert all("attachments" not in item for item in payload["input"])
     assert all("entity_id" not in item for item in payload["input"])
