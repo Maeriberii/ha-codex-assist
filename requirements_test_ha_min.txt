@@ -7,3 +7,4 @@ pytest-homeassistant-custom-component==0.13.329
 hassil==3.5.0
 home-assistant-intents==2026.5.5
 PyTurboJPEG==1.8.3
+voluptuous-openapi==0.3.0
