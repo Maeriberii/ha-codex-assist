@@ -12,6 +12,10 @@ DOMAIN = "codex_assist"
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     from homeassistant.const import Platform
 
+    from .codex_runtime import runtime_token_coordinator
+
+    runtime_token_coordinator(entry)
+
     await hass.config_entries.async_forward_entry_setups(
         entry,
         (Platform.CONVERSATION, Platform.AI_TASK),

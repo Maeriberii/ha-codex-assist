@@ -58,6 +58,24 @@ jobs:
       - name: Run smoke tests against real Home Assistant
         run: python -m pytest tests_ha -q
 
+  ha-minimum:
+    name: Home Assistant 2026.5 contract tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install minimum Home Assistant test environment
+        run: pip install -r requirements_test_ha_min.txt
+
+      - name: Run contract tests against minimum Home Assistant
+        run: python -m pytest tests_ha -q
+
   hassfest:
     name: Hassfest
     runs-on: ubuntu-latest

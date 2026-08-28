@@ -215,6 +215,7 @@ async def test_stream_codex_turn_into_chat_log_calls_chat_log_stream_api(
             "reasoning_effort": "low",
             "reasoning_summary": "auto",
             "text_verbosity": "medium",
+            "text_format": None,
         }
     ]
 
@@ -244,6 +245,76 @@ async def test_codex_input_from_chat_log_translates_image_attachments(
     assert content[1]["type"] == "input_image"
     assert content[1]["image_url"].startswith("data:image/png;base64,")
     assert hass.executor_jobs[0][0] is conversation_module._image_attachments_for_codex
+
+
+def test_image_attachments_rejects_too_many_images(
+    conversation_module,
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setattr(conversation_module, "MAX_IMAGE_ATTACHMENTS", 2)
+    attachments = []
+    for index in range(3):
+        path = tmp_path / f"image-{index}.png"
+        path.write_bytes(b"image")
+        attachments.append(type("Attachment", (), {"mime_type": "image/png", "path": path})())
+
+    with pytest.raises(ValueError, match="at most 2 image attachments"):
+        conversation_module._image_attachments_for_codex(attachments)
+
+
+def test_image_attachments_rejects_aggregate_byte_limit(
+    conversation_module,
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setattr(conversation_module, "MAX_TOTAL_IMAGE_ATTACHMENT_BYTES", 5)
+    attachments = []
+    for index in range(2):
+        path = tmp_path / f"image-{index}.png"
+        path.write_bytes(b"abc")
+        attachments.append(type("Attachment", (), {"mime_type": "image/png", "path": path})())
+
+    with pytest.raises(ValueError, match="total attachment size"):
+        conversation_module._image_attachments_for_codex(attachments)
+
+
+def test_image_attachment_growth_is_read_with_a_hard_bound(
+    conversation_module,
+    monkeypatch,
+):
+    import io
+
+    monkeypatch.setattr(conversation_module, "MAX_IMAGE_ATTACHMENT_BYTES", 5)
+    monkeypatch.setattr(conversation_module, "MAX_TOTAL_IMAGE_ATTACHMENT_BYTES", 5)
+
+    class BoundedReader(io.BytesIO):
+        requested_size: int | None = None
+
+        def read(self, size: int | None = -1):
+            self.requested_size = size
+            return super().read(size)
+
+    reader = BoundedReader(b"unexpectedly large")
+
+    class GrowingPath:
+        def stat(self):
+            return type("Stat", (), {"st_size": 1})()
+
+        def open(self, mode):
+            assert mode == "rb"
+            return reader
+
+    attachment = type(
+        "Attachment",
+        (),
+        {"mime_type": "image/png", "path": GrowingPath()},
+    )()
+
+    with pytest.raises(ValueError, match="per-file size limit"):
+        conversation_module._image_attachments_for_codex([attachment])
+
+    assert reader.requested_size == 6
 
 
 def test_trim_codex_input_items_drops_orphaned_tool_outputs(conversation_module):

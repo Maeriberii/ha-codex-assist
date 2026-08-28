@@ -80,6 +80,39 @@ async def test_stream_turn_yields_text_deltas_and_posts_advanced_options():
 
 
 @pytest.mark.asyncio
+async def test_stream_turn_posts_structured_output_format_with_verbosity():
+    response = FakeStreamResponse(200, [])
+    http = FakeHttpClient(response)
+    client = CodexClient(http_client=http, access_token="token-1")
+    text_format = {
+        "type": "json_schema",
+        "name": "porch_state",
+        "schema": {
+            "type": "object",
+            "properties": {"state": {"type": "string"}},
+            "required": ["state"],
+        },
+    }
+
+    deltas = [
+        delta
+        async for delta in client.stream_turn(
+            model="gpt-5.4",
+            instructions="Return structured data.",
+            input_items=[{"role": "user", "content": "porch state"}],
+            text_verbosity="low",
+            text_format=text_format,
+        )
+    ]
+
+    assert deltas == []
+    assert http.calls[0][2]["json"]["text"] == {
+        "verbosity": "low",
+        "format": text_format,
+    }
+
+
+@pytest.mark.asyncio
 async def test_stream_turn_yields_function_call_after_arguments_complete():
     response = FakeStreamResponse(
         200,
@@ -180,6 +213,55 @@ async def test_stream_turn_raises_rate_limit_error_for_429():
     client = CodexClient(http_client=FakeHttpClient(response), access_token="token-1")
 
     with pytest.raises(CodexRateLimitError, match="quota exceeded"):
+        async for _delta in client.stream_turn(
+            model="gpt-5.4",
+            instructions="x",
+            input_items=[{"role": "user", "content": "hello"}],
+        ):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_stream_turn_raises_rate_limit_error_for_failed_stream_event():
+    response = FakeStreamResponse(
+        200,
+        _event(
+            {
+                "type": "response.failed",
+                "response": {
+                    "error": {
+                        "code": "rate_limit_exceeded",
+                        "message": "synthetic quota failure",
+                    }
+                },
+            }
+        ),
+    )
+    client = CodexClient(http_client=FakeHttpClient(response), access_token="token-1")
+
+    with pytest.raises(CodexRateLimitError, match="synthetic quota failure"):
+        async for _delta in client.stream_turn(
+            model="gpt-5.4",
+            instructions="x",
+            input_items=[{"role": "user", "content": "hello"}],
+        ):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_stream_turn_raises_for_incomplete_stream_event():
+    response = FakeStreamResponse(
+        200,
+        _event(
+            {
+                "type": "response.incomplete",
+                "response": {"incomplete_details": {"reason": "max_output_tokens"}},
+            }
+        ),
+    )
+    client = CodexClient(http_client=FakeHttpClient(response), access_token="token-1")
+
+    with pytest.raises(RuntimeError, match="incomplete.*max_output_tokens"):
         async for _delta in client.stream_turn(
             model="gpt-5.4",
             instructions="x",

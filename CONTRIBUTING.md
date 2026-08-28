@@ -14,7 +14,7 @@ Thanks for helping improve Codex Assist. Bug fixes, documentation improvements, 
 Install [uv](https://docs.astral.sh/uv/) and use the repository-managed environment:
 
 ```bash
-uv sync
+uv sync --all-extras --dev
 uv run ruff check .
 uv run pytest -q
 ```

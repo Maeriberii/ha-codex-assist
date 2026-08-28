@@ -167,3 +167,30 @@ async def test_generate_text_surfaces_codex_error_body_for_debugging():
             instructions="x",
             messages=[CodexMessage(role="user", content="hello")],
         )
+
+
+@pytest.mark.asyncio
+async def test_generate_text_raises_for_failed_stream_event():
+    response = FakeResponse(
+        200,
+        text=_sse_event(
+            "response.failed",
+            {
+                "type": "response.failed",
+                "response": {
+                    "error": {
+                        "code": "server_error",
+                        "message": "synthetic backend failure",
+                    }
+                },
+            },
+        ),
+    )
+    client = CodexClient(http_client=FakeHttpClient(response), access_token="token-1")
+
+    with pytest.raises(RuntimeError, match="synthetic backend failure"):
+        await client.generate_text(
+            model="gpt-5.4",
+            instructions="x",
+            messages=[CodexMessage(role="user", content="hello")],
+        )

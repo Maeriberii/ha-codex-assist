@@ -134,6 +134,7 @@ class CodexClient:
         reasoning_effort: str | None = None,
         reasoning_summary: str | None = None,
         text_verbosity: str | None = None,
+        text_format: dict[str, Any] | None = None,
     ) -> AsyncIterator[CodexStreamDelta]:
         payload = _responses_payload(
             model=model,
@@ -143,6 +144,7 @@ class CodexClient:
             reasoning_effort=reasoning_effort,
             reasoning_summary=reasoning_summary,
             text_verbosity=text_verbosity,
+            text_format=text_format,
         )
 
         async with self._http_client.stream(
@@ -279,6 +281,7 @@ def _responses_payload(
     reasoning_effort: str | None = None,
     reasoning_summary: str | None = None,
     text_verbosity: str | None = None,
+    text_format: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": model,
@@ -289,6 +292,7 @@ def _responses_payload(
     }
     if tools:
         payload["tools"] = tools
+    text_options: dict[str, Any] = {}
     if _supports_reasoning_options(model):
         if reasoning_effort:
             payload["reasoning"] = {"effort": reasoning_effort}
@@ -296,7 +300,11 @@ def _responses_payload(
                 payload["reasoning"]["summary"] = reasoning_summary
             payload["include"] = ["reasoning.encrypted_content"]
         if text_verbosity:
-            payload["text"] = {"verbosity": text_verbosity}
+            text_options["verbosity"] = text_verbosity
+    if text_format:
+        text_options["format"] = text_format
+    if text_options:
+        payload["text"] = text_options
     return payload
 
 
@@ -474,8 +482,8 @@ def extract_streamed_turn_result(stream_text: str) -> CodexTurnResult:
 
     for event in _iter_sse_events(stream_text):
         event_type = event.get("type")
-        if event_type == "error":
-            raise RuntimeError(_event_error_detail(event))
+        if stream_error := _stream_event_exception(event):
+            raise stream_error
         if event_type == "response.output_text.delta":
             delta = event.get("delta")
             if isinstance(delta, str):
@@ -588,6 +596,42 @@ def _event_error_detail(event: dict[str, Any]) -> str:
     return "Codex stream returned an error event"
 
 
+def _stream_event_exception(event: dict[str, Any]) -> RuntimeError | None:
+    event_type = event.get("type")
+    if event_type == "error":
+        return RuntimeError(_event_error_detail(event))
+    if event_type == "response.incomplete":
+        response = event.get("response")
+        details = response.get("incomplete_details") if isinstance(response, dict) else None
+        reason = details.get("reason") if isinstance(details, dict) else None
+        reason_text = reason if isinstance(reason, str) and reason else "unknown reason"
+        return RuntimeError(f"Codex response incomplete: {reason_text}")
+    if event_type != "response.failed":
+        return None
+
+    response = event.get("response")
+    error_value = response.get("error") if isinstance(response, dict) else None
+    if isinstance(error_value, dict):
+        code_value = error_value.get("code")
+        message_value = error_value.get("message") or error_value.get("detail") or code_value
+        error = CodexResponseError(
+            message_value if isinstance(message_value, str) else "unknown error",
+            code_value if isinstance(code_value, str) else None,
+        )
+    elif isinstance(error_value, str):
+        error = CodexResponseError(error_value)
+    else:
+        error = CodexResponseError("response.failed event received")
+
+    if error.code == "token_invalidated":
+        return CodexAuthenticationError(f"Codex authentication failed: {error.detail}")
+    if _is_rate_limit_response(200, error):
+        return CodexRateLimitError(
+            f"Codex usage limit or rate limit reached: {error.detail}"
+        )
+    return RuntimeError(f"Codex stream failed: {error.detail}")
+
+
 def extract_output_text(payload: dict[str, Any]) -> str:
     parts: list[str] = []
     for item in payload.get("output") or []:
@@ -672,8 +716,8 @@ def _parse_sse_payload(
 
 def _stream_delta_from_event(event: dict[str, Any]) -> CodexStreamDelta | None:
     event_type = event.get("type")
-    if event_type == "error":
-        raise RuntimeError(_event_error_detail(event))
+    if stream_error := _stream_event_exception(event):
+        raise stream_error
     if event_type == "response.output_text.delta":
         delta = event.get("delta")
         return CodexTextDelta(delta) if isinstance(delta, str) and delta else None

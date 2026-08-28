@@ -31,7 +31,7 @@ from .codex_client import (
     CodexToolCallDelta,
     codex_user_content_with_images,
 )
-from .codex_runtime import resolve_runtime_tokens
+from .codex_runtime import runtime_token_coordinator
 from .config_flow import (
     DEFAULT_REASONING_EFFORT,
     DEFAULT_REASONING_SUMMARY,
@@ -40,6 +40,8 @@ from .config_flow import (
 
 MAX_TOOL_ITERATIONS = 5
 MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024
+MAX_IMAGE_ATTACHMENTS = 4
+MAX_TOTAL_IMAGE_ATTACHMENT_BYTES = 20 * 1024 * 1024
 LOGGER = logging.getLogger(__name__)
 
 
@@ -105,8 +107,8 @@ class CodexAssistConversationEntity(
         http_client = get_async_client(self.hass)
         auth_client = CodexAuthClient(http_client=http_client)
         try:
-            tokens = await resolve_runtime_tokens(
-                self.entry.data,
+            tokens = await runtime_token_coordinator(self.entry).resolve(
+                lambda: self.entry.data,
                 auth_client=auth_client,
                 async_update_entry_data=lambda data: self.hass.config_entries.async_update_entry(
                     self.entry,
@@ -242,6 +244,7 @@ async def _stream_codex_turn_into_chat_log(
     reasoning_effort: str,
     reasoning_summary: str,
     text_verbosity: str,
+    text_format: dict[str, Any] | None = None,
 ) -> bool:
     tool_call_requested = False
 
@@ -260,6 +263,7 @@ async def _stream_codex_turn_into_chat_log(
                 reasoning_effort=reasoning_effort,
                 reasoning_summary=reasoning_summary,
                 text_verbosity=text_verbosity,
+                text_format=text_format,
             ),
             on_tool_call=mark_tool_call_requested,
         ),
@@ -300,14 +304,15 @@ async def _refresh_runtime_tokens(
     auth_client: CodexAuthClient,
     tokens: CodexTokenSet,
 ) -> CodexTokenSet:
-    if not tokens.refresh_token:
-        raise CodexReauthRequiredError("Codex Assist is missing refresh_token")
-    refreshed = await auth_client.refresh(tokens)
-    updated_data = dict(entry.data)
-    updated_data["access_token"] = refreshed.access_token
-    updated_data["refresh_token"] = refreshed.refresh_token
-    hass.config_entries.async_update_entry(entry, data=updated_data)
-    return refreshed
+    return await runtime_token_coordinator(entry).refresh_after_rejection(
+        lambda: entry.data,
+        rejected_tokens=tokens,
+        auth_client=auth_client,
+        async_update_entry_data=lambda data: hass.config_entries.async_update_entry(
+            entry,
+            data=data,
+        ),
+    )
 
 
 def _start_reauth_result(
@@ -416,7 +421,7 @@ async def _async_image_attachments_for_codex(
 
 
 def _image_attachments_for_codex(attachments: Any) -> list[tuple[str, bytes]]:
-    images: list[tuple[str, bytes]] = []
+    candidates: list[tuple[str, Any, int]] = []
     for attachment in attachments:
         mime_type = getattr(attachment, "mime_type", "")
         if not isinstance(mime_type, str) or not mime_type.startswith("image/"):
@@ -425,16 +430,45 @@ def _image_attachments_for_codex(attachments: Any) -> list[tuple[str, bytes]]:
         if path is None:
             continue
         try:
-            if path.stat().st_size > MAX_IMAGE_ATTACHMENT_BYTES:
-                LOGGER.warning(
-                    "Skipping Codex Assist image attachment over %s bytes: %s",
-                    MAX_IMAGE_ATTACHMENT_BYTES,
-                    path,
-                )
-                continue
-            images.append((mime_type, path.read_bytes()))
+            size = path.stat().st_size
         except OSError as err:
             LOGGER.warning("Skipping unreadable Codex Assist image attachment %s: %s", path, err)
+            continue
+        if size > MAX_IMAGE_ATTACHMENT_BYTES:
+            LOGGER.warning(
+                "Skipping Codex Assist image attachment over %s bytes: %s",
+                MAX_IMAGE_ATTACHMENT_BYTES,
+                path,
+            )
+            continue
+        candidates.append((mime_type, path, size))
+
+    if len(candidates) > MAX_IMAGE_ATTACHMENTS:
+        raise ValueError(
+            f"Codex Assist accepts at most {MAX_IMAGE_ATTACHMENTS} image attachments"
+        )
+    if sum(size for _, _, size in candidates) > MAX_TOTAL_IMAGE_ATTACHMENT_BYTES:
+        raise ValueError("Codex Assist image attachments exceed the total attachment size limit")
+
+    images: list[tuple[str, bytes]] = []
+    total_bytes = 0
+    for mime_type, path, _size in candidates:
+        remaining_bytes = MAX_TOTAL_IMAGE_ATTACHMENT_BYTES - total_bytes
+        read_limit = min(MAX_IMAGE_ATTACHMENT_BYTES, remaining_bytes)
+        try:
+            with path.open("rb") as attachment_file:
+                data = attachment_file.read(read_limit + 1)
+        except OSError as err:
+            LOGGER.warning("Skipping unreadable Codex Assist image attachment %s: %s", path, err)
+            continue
+        if len(data) > MAX_IMAGE_ATTACHMENT_BYTES:
+            raise ValueError("Codex Assist image attachment grew beyond the per-file size limit")
+        if len(data) > remaining_bytes:
+            raise ValueError(
+                "Codex Assist image attachments exceed the total attachment size limit"
+            )
+        total_bytes += len(data)
+        images.append((mime_type, data))
     return images
 
 

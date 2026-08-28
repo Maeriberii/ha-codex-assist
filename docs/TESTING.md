@@ -3,6 +3,7 @@
 ## Automated checks
 
 ```bash
+uv sync --all-extras --dev
 uv run ruff check .
 uv run pytest -q
 ```
@@ -12,9 +13,14 @@ The fast suite under `tests/` uses lightweight Home Assistant fakes. Run the `te
 ```bash
 uv run --isolated --python 3.14 --with-requirements requirements_test_ha.txt \
   python -m pytest tests_ha -q
+
+uv run --isolated --python 3.14 --with-requirements requirements_test_ha_min.txt \
+  python -m pytest tests_ha -q
 ```
 
-CI runs both lanes on pushes and pull requests, and runs the Home Assistant harness weekly.
+CI runs the fast suite plus real-Home-Assistant contract lanes against both the
+latest release and Home Assistant 2026.5.0, the minimum supported version. The
+latest-version lane also runs weekly to catch upstream breakage.
 
 ## Release-candidate install
 
@@ -57,5 +63,9 @@ Home Assistant's normal Assist popup may not expose file uploads. Use AI Task su
 3. Call `ai_task.generate_image` with a plain prompt and one non-default size.
 4. Confirm text-only Assist still works afterward.
 5. Confirm logs do not contain tokens, local file contents, or base64 payloads.
+
+Codex Assist accepts up to four image attachments, with a 10 MiB per-image limit and
+a 20 MiB aggregate limit per request. Requests over the count or aggregate limit fail
+instead of silently discarding attachments.
 
 Before publishing screenshots, remove private URLs, account details, tokens, device codes, and private entity or dashboard names.

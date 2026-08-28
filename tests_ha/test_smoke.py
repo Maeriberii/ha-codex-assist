@@ -8,14 +8,19 @@ calls are stubbed.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
+import voluptuous as vol
 from homeassistant.components import conversation
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import Context, HomeAssistant
+from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.codex_assist import DOMAIN
+from custom_components.codex_assist.ai_task import _structured_output_format
 from custom_components.codex_assist.codex_client import CodexClient, CodexTextDelta
 from custom_components.codex_assist.diagnostics import (
     REDACTED,
@@ -103,3 +108,55 @@ async def test_diagnostics_redact_tokens_on_real_entry(hass: HomeAssistant) -> N
     assert entry_data["refresh_token"] == REDACTED
     assert entry_data["model"] == "gpt-5.4"
     assert "test-access-token" not in str(diagnostics)
+
+
+async def test_options_flow_uses_real_home_assistant_contract(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = await _setup_entry(hass)
+
+    async def fake_model_ids(**kwargs: object) -> list[str]:
+        return ["gpt-5.4"]
+
+    monkeypatch.setattr(
+        "custom_components.codex_assist.config_flow.fetch_codex_model_ids",
+        fake_model_ids,
+    )
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "init"
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={
+            "model": "gpt-5.4",
+            "prompt": "Keep it short.",
+            "reasoning_effort": "low",
+            "reasoning_summary": "auto",
+            "text_verbosity": "low",
+            "image_model": "gpt-image-2-medium",
+            "image_size": "1024x1024",
+        },
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"]["text_verbosity"] == "low"
+    assert entry.options["prompt"] == "Keep it short."
+
+
+def test_structured_output_uses_real_home_assistant_schema_converter() -> None:
+    task = SimpleNamespace(
+        name="Porch state",
+        structure=vol.Schema({vol.Required("state"): vol.In(["on", "off"])}),
+    )
+    chat_log = SimpleNamespace(llm_api=None)
+
+    text_format = _structured_output_format(task, chat_log)
+
+    assert text_format is not None
+    assert text_format["type"] == "json_schema"
+    assert text_format["name"] == "porch_state"
+    assert text_format["schema"]["required"] == ["state"]
+    assert text_format["schema"]["properties"]["state"]["enum"] == ["on", "off"]

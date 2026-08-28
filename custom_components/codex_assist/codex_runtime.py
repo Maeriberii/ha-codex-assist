@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import inspect
 import json
@@ -16,20 +17,79 @@ class RuntimeAuthClient(Protocol):
     async def refresh(self, tokens: CodexTokenSet) -> CodexTokenSet: ...
 
 
+class RuntimeTokenCoordinator:
+    """Serialize rotating-token refreshes for one config entry."""
+
+    def __init__(self) -> None:
+        self._refresh_lock = asyncio.Lock()
+
+    async def resolve(
+        self,
+        get_entry_data: Callable[[], Mapping[str, Any]],
+        *,
+        auth_client: RuntimeAuthClient,
+        async_update_entry_data: Callable[[dict[str, Any]], Awaitable[None] | None],
+        now: float | None = None,
+        refresh_skew_seconds: int = ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+    ) -> CodexTokenSet:
+        """Resolve current credentials, refreshing once under the entry lock."""
+        async with self._refresh_lock:
+            return await resolve_runtime_tokens(
+                get_entry_data(),
+                auth_client=auth_client,
+                async_update_entry_data=async_update_entry_data,
+                get_current_entry_data=get_entry_data,
+                now=now,
+                refresh_skew_seconds=refresh_skew_seconds,
+            )
+
+    async def refresh_after_rejection(
+        self,
+        get_entry_data: Callable[[], Mapping[str, Any]],
+        *,
+        rejected_tokens: CodexTokenSet,
+        auth_client: RuntimeAuthClient,
+        async_update_entry_data: Callable[[dict[str, Any]], Awaitable[None] | None],
+    ) -> CodexTokenSet:
+        """Refresh a rejected token or reuse credentials rotated by another request."""
+        async with self._refresh_lock:
+            entry_data = get_entry_data()
+            current = _tokens_from_entry_data(entry_data)
+            if current != rejected_tokens:
+                return current
+            if not current.refresh_token:
+                raise CodexReauthRequiredError("Codex Assist is missing refresh_token")
+            refreshed = await auth_client.refresh(current)
+            latest_data = get_entry_data()
+            latest = _tokens_from_entry_data(latest_data)
+            if latest != current:
+                return latest
+            await _persist_runtime_tokens(latest_data, refreshed, async_update_entry_data)
+            return refreshed
+
+
+def runtime_token_coordinator(entry: Any) -> RuntimeTokenCoordinator:
+    """Return the coordinator shared by all platforms for a config entry."""
+    coordinator = getattr(entry, "runtime_data", None)
+    if isinstance(coordinator, RuntimeTokenCoordinator):
+        return coordinator
+    coordinator = RuntimeTokenCoordinator()
+    entry.runtime_data = coordinator
+    return coordinator
+
+
 async def resolve_runtime_tokens(
     entry_data: Mapping[str, Any],
     *,
     auth_client: RuntimeAuthClient,
     async_update_entry_data: Callable[[dict[str, Any]], Awaitable[None] | None],
+    get_current_entry_data: Callable[[], Mapping[str, Any]] | None = None,
     now: float | None = None,
     refresh_skew_seconds: int = ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
 ) -> CodexTokenSet:
-    access_token = str(entry_data.get("access_token") or "").strip()
-    refresh_token = str(entry_data.get("refresh_token") or "").strip()
-    if not access_token:
-        raise CodexReauthRequiredError("Codex Assist is missing access_token")
-
-    tokens = CodexTokenSet(access_token=access_token, refresh_token=refresh_token)
+    tokens = _tokens_from_entry_data(entry_data)
+    access_token = tokens.access_token
+    refresh_token = tokens.refresh_token
     now = time.time() if now is None else now
     exp = _decode_jwt_exp(access_token)
     if exp is None or exp > now + refresh_skew_seconds:
@@ -45,13 +105,33 @@ async def resolve_runtime_tokens(
             return tokens
         raise
 
+    latest_data = get_current_entry_data() if get_current_entry_data else entry_data
+    latest = _tokens_from_entry_data(latest_data)
+    if latest != tokens:
+        return latest
+    await _persist_runtime_tokens(latest_data, refreshed, async_update_entry_data)
+    return refreshed
+
+
+def _tokens_from_entry_data(entry_data: Mapping[str, Any]) -> CodexTokenSet:
+    access_token = str(entry_data.get("access_token") or "").strip()
+    refresh_token = str(entry_data.get("refresh_token") or "").strip()
+    if not access_token:
+        raise CodexReauthRequiredError("Codex Assist is missing access_token")
+    return CodexTokenSet(access_token=access_token, refresh_token=refresh_token)
+
+
+async def _persist_runtime_tokens(
+    entry_data: Mapping[str, Any],
+    tokens: CodexTokenSet,
+    async_update_entry_data: Callable[[dict[str, Any]], Awaitable[None] | None],
+) -> None:
     updated_data = dict(entry_data)
-    updated_data["access_token"] = refreshed.access_token
-    updated_data["refresh_token"] = refreshed.refresh_token
+    updated_data["access_token"] = tokens.access_token
+    updated_data["refresh_token"] = tokens.refresh_token
     result = async_update_entry_data(updated_data)
     if inspect.isawaitable(result):
         await result
-    return refreshed
 
 
 def access_token_is_expiring(
