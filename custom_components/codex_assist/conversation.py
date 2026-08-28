@@ -32,7 +32,6 @@ from .codex_client import (
     CodexStreamDelta,
     CodexTextDelta,
     CodexToolCallDelta,
-    CodexWebSearchStartedDelta,
     codex_user_content_with_images,
 )
 from .codex_runtime import runtime_token_coordinator
@@ -50,13 +49,6 @@ MAX_IMAGE_ATTACHMENTS = 4
 MAX_TOTAL_IMAGE_ATTACHMENT_BYTES = 20 * 1024 * 1024
 LOGGER = logging.getLogger(__name__)
 _SOURCES_SEPARATOR = "\n\nSources:\n"
-# Home Assistant starts streaming TTS after more than 60 assistant characters.
-# A hosted search can otherwise leave the already-open audio request idle until
-# a reverse proxy or browser gives up before the first audio byte arrives.
-_WEB_SEARCH_TTS_ACKNOWLEDGEMENT = (
-    "I’m checking current sources now. This may take a few seconds while I verify "
-    "the latest information. "
-)
 
 
 async def async_setup_entry(
@@ -327,8 +319,6 @@ async def _codex_stream_to_assistant_deltas(
             started = True
         if isinstance(delta, CodexTextDelta):
             yield {"content": delta.text}
-        elif isinstance(delta, CodexWebSearchStartedDelta):
-            yield {"content": _WEB_SEARCH_TTS_ACKNOWLEDGEMENT}
         elif isinstance(delta, CodexToolCallDelta):
             if on_tool_call is not None:
                 on_tool_call()
