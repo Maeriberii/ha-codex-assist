@@ -8,6 +8,7 @@ import httpx
 import voluptuous as vol
 from homeassistant.components import ai_task, conversation
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import llm
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.httpx_client import get_async_client
 from homeassistant.util import slugify
@@ -406,7 +407,11 @@ def _structured_output_format(
     """Convert the Home Assistant AI Task structure to a Responses text format."""
     if not task.structure:
         return None
-    custom_serializer = chat_log.llm_api.custom_serializer if chat_log.llm_api is not None else None
+    custom_serializer = (
+        chat_log.llm_api.custom_serializer
+        if chat_log.llm_api is not None
+        else llm.selector_serializer
+    )
     return {
         "type": "json_schema",
         "name": _structured_output_name(task.name),

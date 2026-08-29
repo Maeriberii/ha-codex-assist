@@ -213,6 +213,7 @@ def install_homeassistant_fakes(monkeypatch):
     httpx_client.get_async_client = lambda hass: getattr(hass, "http_client", None)
     intent.IntentResponse = IntentResponse
     llm.LLM_API_ASSIST = "assist"
+    llm.selector_serializer = object()
     llm.ToolInput = ToolInput
     selector.SelectOptionDict = SelectOptionDict
     selector.SelectSelector = SelectSelector
