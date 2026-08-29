@@ -32,6 +32,8 @@ flowchart LR
 - **AI Task entity** registers a native provider for text, structured data, supported image attachments, and image generation.
 - **Runtime token coordinator** serializes refresh-token rotation per config entry. Concurrent Conversation and AI Task requests reuse the winning refresh instead of invalidating one another.
 - **Codex client** sends requests to the Codex-compatible service interface and normalizes its response stream.
+- **Responses transcript bridge** keeps visible HA content separate from tagged in-memory Codex-native items. Reasoning encrypted state and web-search call state remain private in `AssistantContent.native`, while reasoning summaries use `thinking_content`. The next stateless HTTP request replays these native items without exposing them in the frontend.
+- **Per-turn transcript** builds instructions, tool schemas, and the initial history once after Home Assistant has provided LLM data. Later tool rounds append only new provider output and HA tool-result items. Safe trace metadata records numeric usage/cache fields, payload sizes, and short hashes, never prompt or tool-result content.
 - **Runtime options** are normalized once per request. They provide bounded tool-capable model rounds and per-client connect, write, pool, read, and image-generation timeouts. The default stream read timeout is unbounded because Responses SSE streams may be quiet while work is in progress.
 - **Hosted web search** is an explicit option. When enabled, it adds the backend `web_search` tool and converts structured URL annotations into a validated source card. Unsupported or unsafe citation URLs are discarded.
 - **Assist tool bridge** maps model-requested device actions into Home Assistant's Assist LLM API. It does not call services directly.
@@ -47,6 +49,8 @@ flowchart LR
 7. Codex Assist returns the final response to Home Assistant.
 
 The conversation orchestrator permits the configured number of consecutive tool-capable model rounds (8 by default, bounded to 1–20). Parallel calls within a round count once. If the budget is exhausted, it performs exactly one final synthesis with tools disabled; the existing interrupted-synthesis retry remains in effect.
+
+The normal transport remains HTTP SSE with `store=false`. It sends a stable opaque `prompt_cache_key` derived from integration and conversation identifiers, not from prompt or user content. Tool definitions are removed for the forced final synthesis because the HTTP backend contract for preserving identical schemas while reliably forbidding invocation has not been established; the local no-tool guard remains mandatory.
 
 ## AI Task flow
 

@@ -26,6 +26,8 @@ class FakeContent:
     tool_result: dict | None = None
     tool_calls: list | None = None
     attachments: list | None = None
+    native: object | None = None
+    thinking_content: str | None = None
 
 
 @dataclass
@@ -83,6 +85,25 @@ def test_request_failure_text_names_blank_transport_error(conversation_module):
     assert conversation_module._request_failure_text(httpx.ReadTimeout("")) == (
         "Codex Assist failed: ReadTimeout"
     )
+
+
+def test_safe_request_telemetry_contains_only_sizes_and_hashes(conversation_module):
+    stats = conversation_module._safe_request_telemetry(
+        instructions="private prompt",
+        input_items=[
+            {"role": "user", "content": "private user text"},
+            {"type": "function_call_output", "output": "private tool result"},
+        ],
+        tools=[{"type": "function", "name": "PrivateTool"}],
+        round_number=2,
+        forced_final=False,
+    )
+
+    assert stats["round"] == 2
+    assert stats["input_item_count"] == 2
+    assert "private prompt" not in str(stats)
+    assert "private user text" not in str(stats)
+    assert "private tool result" not in str(stats)
 
 
 
@@ -421,18 +442,20 @@ async def test_stream_codex_turn_into_chat_log_calls_chat_log_stream_api(
     assert tool_requested is False
     assert chat_log.streamed_entity_id == "conversation.codex_assist"
     assert chat_log.streamed_deltas == [{"role": "assistant"}, {"content": "Done"}]
-    assert codex.calls == [
-        {
-            "model": "gpt-5.4",
-            "instructions": "Be concise.",
-            "input_items": [{"role": "user", "content": "ping"}],
-            "tools": [],
-            "reasoning_effort": "low",
-            "reasoning_summary": "auto",
-            "text_verbosity": "medium",
-            "text_format": None,
-        }
-    ]
+    assert len(codex.calls) == 1
+    assert {
+        key: value for key, value in codex.calls[0].items() if key != "on_request_metrics"
+    } == {
+        "model": "gpt-5.4",
+        "instructions": "Be concise.",
+        "input_items": [{"role": "user", "content": "ping"}],
+        "tools": [],
+        "reasoning_effort": "low",
+        "reasoning_summary": "auto",
+        "text_verbosity": "medium",
+        "text_format": None,
+        "prompt_cache_key": None,
+    }
 
 
 @pytest.mark.asyncio
@@ -559,7 +582,7 @@ def test_image_attachment_growth_is_read_with_a_hard_bound(
     assert reader.requested_size == 6
 
 
-def test_trim_codex_input_items_drops_orphaned_tool_outputs(conversation_module):
+def test_initial_history_selection_keeps_complete_tool_groups(conversation_module):
     input_items = [
         {
             "type": "function_call",
@@ -586,7 +609,9 @@ def test_trim_codex_input_items_drops_orphaned_tool_outputs(conversation_module)
         },
     ]
 
-    result = conversation_module._trim_codex_input_items(input_items, max_items=4)
+    result = conversation_module._trim_initial_codex_input_items(
+        input_items, max_turn_groups=1
+    )
 
     assert result == [
         {"role": "user", "content": "latest"},
@@ -604,13 +629,13 @@ def test_trim_codex_input_items_drops_orphaned_tool_outputs(conversation_module)
     ]
 
 
-def test_trim_codex_input_items_leaves_short_history_unchanged(conversation_module):
+def test_initial_history_selection_leaves_short_history_unchanged(conversation_module):
     input_items = [{"role": "user", "content": "hello"}]
 
-    assert conversation_module._trim_codex_input_items(input_items, max_items=24) is input_items
+    assert conversation_module._trim_initial_codex_input_items(input_items) == input_items
 
 
-def test_trim_codex_input_items_keeps_pair_at_retained_boundary(conversation_module):
+def test_initial_history_selection_never_orphans_tool_pair(conversation_module):
     input_items = [
         {"role": "user", "content": "old"},
         {
@@ -627,17 +652,6 @@ def test_trim_codex_input_items_keeps_pair_at_retained_boundary(conversation_mod
         {"role": "assistant", "content": "Done."},
     ]
 
-    assert conversation_module._trim_codex_input_items(input_items, max_items=3) == [
-        {
-            "type": "function_call",
-            "name": "BoundaryTool",
-            "arguments": "{}",
-            "call_id": "boundary-call",
-        },
-        {
-            "type": "function_call_output",
-            "call_id": "boundary-call",
-            "output": "{}",
-        },
-        {"role": "assistant", "content": "Done."},
-    ]
+    assert conversation_module._trim_initial_codex_input_items(
+        input_items, max_turn_groups=1
+    ) == input_items

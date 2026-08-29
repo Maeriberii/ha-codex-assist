@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -29,12 +30,22 @@ from .codex_client import (
     CodexCitation,
     CodexCitationDelta,
     CodexClient,
+    CodexNativeItemDelta,
     CodexRateLimitError,
+    CodexReasoningSummaryDelta,
+    CodexRequestMetrics,
     CodexStreamDelta,
     CodexTextDelta,
     CodexToolCall,
     CodexToolCallDelta,
+    CodexUsage,
+    CodexUsageDelta,
     codex_user_content_with_images,
+)
+from .codex_protocol import (
+    native_state_from_response_items,
+    responses_items_from_content,
+    stable_prompt_cache_key,
 )
 from .codex_runtime import runtime_token_coordinator
 from .config_flow import (
@@ -60,6 +71,48 @@ _WEB_SEARCH_CITATION_INSTRUCTIONS = (
     "section in the response text. Refer to sources by human-readable names only. The "
     "integration renders structured citations separately."
 )
+
+
+def _json_bytes(value: Any) -> int:
+    return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode())
+
+
+def _safe_request_telemetry(
+    *,
+    instructions: str,
+    input_items: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    round_number: int | None,
+    forced_final: bool,
+) -> dict[str, Any]:
+    """Return numeric/hash-only trace metadata; never include request content."""
+    return {
+        "round": round_number,
+        "forced_final": forced_final,
+        "input_item_count": len(input_items),
+        "tool_count": len(tools),
+        "instructions_sha256": hashlib.sha256(instructions.encode()).hexdigest()[:16],
+        "tools_sha256": hashlib.sha256(
+            json.dumps(tools, separators=(",", ":"), sort_keys=True).encode()
+        ).hexdigest()[:16],
+    }
+
+
+def _safe_usage_telemetry(usage: CodexUsage) -> dict[str, Any]:
+    stats = {
+        key: value
+        for key, value in {
+            "input_tokens": usage.input_tokens,
+            "cached_tokens": usage.cached_tokens,
+            "cache_write_tokens": usage.cache_write_tokens,
+            "output_tokens": usage.output_tokens,
+            "reasoning_tokens": usage.reasoning_tokens,
+        }.items()
+        if value is not None
+    }
+    if usage.input_tokens and usage.cached_tokens is not None:
+        stats["cache_ratio"] = usage.cached_tokens / usage.input_tokens
+    return stats
 
 
 async def async_setup_entry(
@@ -130,6 +183,16 @@ class CodexAssistConversationEntity(
         except conversation.ConverseError as err:
             return err.as_conversation_result()
 
+        # HA has frozen the selected API instance for this incoming user turn.
+        # Keep this prefix immutable through all model/tool rounds.
+        instructions = _instructions_for_turn(chat_log, prompt, web_search=web_search)
+        normal_tools = _codex_tools_from_chat_log(chat_log, enable_web_search=web_search)
+        input_items = await _codex_input_from_chat_log(self.hass, chat_log)
+        prompt_cache_key = stable_prompt_cache_key(
+            self.entry.entry_id,
+            getattr(chat_log, "conversation_id", user_input.conversation_id or "new"),
+        )
+
         http_client = get_async_client(self.hass)
         auth_client = CodexAuthClient(http_client=http_client)
         try:
@@ -164,21 +227,21 @@ class CodexAssistConversationEntity(
             *,
             tools: list[dict[str, Any]],
             allow_tools: bool,
+            round_number: int,
             on_text_delta: Callable[[str], None] | None = None,
         ) -> bool | None:
             """Stream one model turn, refreshing a rejected access token once."""
             nonlocal codex, tokens
 
             async def stream_with(client: CodexClient) -> bool:
-                return await _stream_codex_turn_into_chat_log(
+                content_start = len(chat_log.content)
+                requested_tools = await _stream_codex_turn_into_chat_log(
                     chat_log=chat_log,
                     codex=client,
                     entity_id=self.entity_id or "",
                     model=model,
-                    instructions=_instructions_for_turn(
-                        chat_log, prompt, web_search=web_search
-                    ),
-                    input_items=await _codex_input_from_chat_log(self.hass, chat_log),
+                    instructions=instructions,
+                    input_items=input_items,
                     tools=tools,
                     reasoning_effort=reasoning_effort,
                     reasoning_summary=reasoning_summary,
@@ -186,7 +249,11 @@ class CodexAssistConversationEntity(
                     allow_tools=allow_tools,
                     citation_sink=citations,
                     on_text_delta=on_text_delta,
+                    prompt_cache_key=prompt_cache_key,
+                    round_number=round_number,
                 )
+                input_items.extend(responses_items_from_content(chat_log.content[content_start:]))
+                return requested_tools
 
             try:
                 return await stream_with(codex)
@@ -223,20 +290,21 @@ class CodexAssistConversationEntity(
         reauth_required = False
 
         async def run_tool_iteration(iteration: int, force_final: bool) -> bool:
-            del iteration
             nonlocal reauth_required
             if force_final:
                 tool_call_requested = await _async_retry_forced_synthesis(
                     lambda on_text_delta: stream_turn_with_auth_retry(
-                        tools=[], allow_tools=False, on_text_delta=on_text_delta
+                        tools=[],
+                        allow_tools=False,
+                        round_number=iteration,
+                        on_text_delta=on_text_delta,
                     )
                 )
             else:
                 tool_call_requested = await stream_turn_with_auth_retry(
-                    tools=_codex_tools_from_chat_log(
-                        chat_log, enable_web_search=web_search
-                    ),
+                    tools=normal_tools,
                     allow_tools=True,
+                    round_number=iteration,
                 )
             if tool_call_requested is None:
                 reauth_required = True
@@ -345,6 +413,8 @@ async def _stream_codex_turn_into_chat_log(
     allow_tools: bool = True,
     citation_sink: list[CodexCitation] | None = None,
     on_text_delta: Callable[[str], None] | None = None,
+    prompt_cache_key: str | None = None,
+    round_number: int | None = None,
 ) -> bool:
     tool_call_requested = False
 
@@ -355,6 +425,29 @@ async def _stream_codex_turn_into_chat_log(
                 "Codex Assist final synthesis returned a tool call despite tools being disabled"
             )
         tool_call_requested = True
+
+    telemetry = _safe_request_telemetry(
+        instructions=instructions,
+        input_items=input_items,
+        tools=tools,
+        round_number=round_number,
+        forced_final=not allow_tools,
+    )
+    if hasattr(chat_log, "async_trace"):
+        chat_log.async_trace({"stats": telemetry})
+
+    def update_request_metrics(metrics: CodexRequestMetrics) -> None:
+        telemetry.update(
+            {
+                "request_bytes": metrics.request_bytes,
+                "instructions_bytes": metrics.instructions_bytes,
+                "input_bytes": metrics.input_bytes,
+                "tools_bytes": metrics.tools_bytes,
+                "tool_result_bytes": metrics.tool_result_bytes,
+            }
+        )
+        if hasattr(chat_log, "async_trace"):
+            chat_log.async_trace({"stats": telemetry})
 
     async for _delta in chat_log.async_add_delta_content_stream(
         entity_id,
@@ -368,11 +461,15 @@ async def _stream_codex_turn_into_chat_log(
                 reasoning_summary=reasoning_summary,
                 text_verbosity=text_verbosity,
                 text_format=text_format,
+                prompt_cache_key=prompt_cache_key,
+                on_request_metrics=update_request_metrics,
             ),
             on_tool_call=mark_tool_call_requested,
             citation_sink=citation_sink,
-            on_text_delta=on_text_delta,
-        ),
+                on_text_delta=on_text_delta,
+                chat_log=chat_log,
+                telemetry=telemetry,
+            ),
     ):
         pass
     return tool_call_requested
@@ -384,9 +481,12 @@ async def _codex_stream_to_assistant_deltas(
     on_tool_call: Callable[[CodexToolCall], None] | None = None,
     citation_sink: list[CodexCitation] | None = None,
     on_text_delta: Callable[[str], None] | None = None,
+    chat_log: conversation.ChatLog | None = None,
+    telemetry: dict[str, Any] | None = None,
 ) -> AsyncIterator[AssistantContentDeltaDict]:
     started = False
     seen_urls: set[str] = set()
+    native_items: list[dict[str, Any]] = []
     async for delta in stream:
         if isinstance(delta, CodexCitationDelta):
             citation = _safe_citation(delta.citation)
@@ -397,6 +497,15 @@ async def _codex_stream_to_assistant_deltas(
                 ):
                     citation_sink.append(citation)
             continue
+        if isinstance(delta, CodexUsageDelta):
+            if telemetry is not None:
+                telemetry.update(_safe_usage_telemetry(delta.usage))
+                if hasattr(chat_log, "async_trace"):
+                    chat_log.async_trace({"stats": telemetry})
+            continue
+        if isinstance(delta, CodexNativeItemDelta):
+            native_items.append(delta.item)
+            continue
         if not started:
             yield {"role": "assistant"}
             started = True
@@ -404,6 +513,8 @@ async def _codex_stream_to_assistant_deltas(
             if on_text_delta is not None:
                 on_text_delta(delta.text)
             yield {"content": delta.text}
+        elif isinstance(delta, CodexReasoningSummaryDelta):
+            yield {"thinking_content": delta.text}
         elif isinstance(delta, CodexToolCallDelta):
             if on_tool_call is not None:
                 on_tool_call(delta.tool_call)
@@ -416,6 +527,10 @@ async def _codex_stream_to_assistant_deltas(
                     )
                 ]
             }
+    if native := native_state_from_response_items(native_items):
+        if not started:
+            yield {"role": "assistant"}
+        yield {"native": native}
 
 
 def _safe_citation(citation: CodexCitation) -> CodexCitation | None:
@@ -562,28 +677,48 @@ async def _codex_input_from_chat_log(
                     }
                 )
 
-    return _trim_codex_input_items(input_items, max_items=24)
+        if role == "assistant":
+            native_items = responses_items_from_content([content])
+            for native_item in native_items:
+                if native_item.get("type") in {
+                    "reasoning",
+                    "web_search_call",
+                    "image_generation_call",
+                }:
+                    input_items.append(native_item)
+
+    return _trim_initial_codex_input_items(input_items)
 
 
-def _trim_codex_input_items(
+def _trim_initial_codex_input_items(
     input_items: list[dict[str, Any]],
     *,
-    max_items: int,
+    max_turn_groups: int = 12,
+    max_bytes: int = 256 * 1024,
 ) -> list[dict[str, Any]]:
-    if len(input_items) <= max_items:
+    """Select complete old turn groups only before a new model loop begins."""
+    if not input_items:
         return input_items
-
-    trimmed = input_items[-max_items:]
-    included_calls = {
-        str(item.get("call_id"))
-        for item in trimmed
-        if item.get("type") == "function_call" and item.get("call_id")
-    }
-    return [
-        item
-        for item in trimmed
-        if item.get("type") != "function_call_output" or str(item.get("call_id")) in included_calls
-    ]
+    groups: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    for item in input_items:
+        if item.get("role") == "user" and current:
+            groups.append(current)
+            current = []
+        current.append(item)
+    if current:
+        groups.append(current)
+    selected: list[list[dict[str, Any]]] = []
+    selected_bytes = 0
+    for group in reversed(groups):
+        group_bytes = _json_bytes(group)
+        if selected and (
+            len(selected) >= max_turn_groups or selected_bytes + group_bytes > max_bytes
+        ):
+            break
+        selected.append(group)
+        selected_bytes += group_bytes
+    return [item for group in reversed(selected) for item in group]
 
 
 async def _async_image_attachments_for_codex(

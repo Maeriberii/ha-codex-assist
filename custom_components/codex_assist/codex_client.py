@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -25,6 +25,10 @@ CODEX_STREAM_TIMEOUT = httpx.Timeout(
     write=DEFAULT_STREAM_WRITE_TIMEOUT,
     pool=DEFAULT_STREAM_POOL_TIMEOUT,
 )
+
+
+def _compact_json_bytes(value: Any) -> bytes:
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
 
 
 class AsyncPostClient(Protocol):
@@ -83,7 +87,50 @@ class CodexCitationDelta:
     citation: CodexCitation
 
 
-CodexStreamDelta = CodexTextDelta | CodexToolCallDelta | CodexCitationDelta
+@dataclass(frozen=True)
+class CodexReasoningSummaryDelta:
+    text: str
+
+
+@dataclass(frozen=True)
+class CodexNativeItemDelta:
+    item: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CodexUsage:
+    response_id: str | None = None
+    input_tokens: int | None = None
+    cached_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    output_tokens: int | None = None
+    reasoning_tokens: int | None = None
+
+
+@dataclass(frozen=True)
+class CodexUsageDelta:
+    usage: CodexUsage
+
+
+@dataclass(frozen=True)
+class CodexRequestMetrics:
+    """Safe byte counts for one serialized Responses request."""
+
+    request_bytes: int
+    instructions_bytes: int
+    input_bytes: int
+    tools_bytes: int
+    tool_result_bytes: int
+
+
+CodexStreamDelta = (
+    CodexTextDelta
+    | CodexToolCallDelta
+    | CodexCitationDelta
+    | CodexReasoningSummaryDelta
+    | CodexNativeItemDelta
+    | CodexUsageDelta
+)
 
 
 class CodexClient:
@@ -166,6 +213,9 @@ class CodexClient:
         reasoning_summary: str | None = None,
         text_verbosity: str | None = None,
         text_format: dict[str, Any] | None = None,
+        prompt_cache_key: str | None = None,
+        tool_choice: str | None = None,
+        on_request_metrics: Callable[[CodexRequestMetrics], None] | None = None,
     ) -> AsyncIterator[CodexStreamDelta]:
         payload = _responses_payload(
             model=model,
@@ -176,13 +226,30 @@ class CodexClient:
             reasoning_summary=reasoning_summary,
             text_verbosity=text_verbosity,
             text_format=text_format,
+            prompt_cache_key=prompt_cache_key,
+            tool_choice=tool_choice,
         )
+        request_body = _compact_json_bytes(payload)
+        if on_request_metrics is not None:
+            on_request_metrics(
+                CodexRequestMetrics(
+                    request_bytes=len(request_body),
+                    instructions_bytes=len(instructions.encode()),
+                    input_bytes=len(_compact_json_bytes(input_items)),
+                    tools_bytes=len(_compact_json_bytes(tools or [])),
+                    tool_result_bytes=sum(
+                        len(_compact_json_bytes(item))
+                        for item in input_items
+                        if item.get("type") == "function_call_output"
+                    ),
+                )
+            )
 
         async with self._http_client.stream(
             "POST",
             f"{self._base_url}/responses",
             headers=codex_headers(self._access_token),
-            json=payload,
+            content=request_body,
             timeout=self._stream_timeout,
         ) as response:
             if response.status_code != 200:
@@ -202,6 +269,14 @@ class CodexClient:
             anonymous_call_index = 0
             async for event in _aiter_sse_events(response):
                 event_type = event.get("type")
+                if event_type in {
+                    "response.completed",
+                    "response.incomplete",
+                    "response.failed",
+                }:
+                    yield CodexUsageDelta(_usage_from_completed_event(event))
+                if stream_error := _stream_event_exception(event):
+                    raise stream_error
                 for citation in _citations_from_event(event):
                     yield CodexCitationDelta(citation)
                 if event_type == "response.output_item.added":
@@ -241,6 +316,20 @@ class CodexClient:
                             pending_tool_calls.pop(key, None)
                     if call_id and call_id in completed_tool_call_ids:
                         continue
+                    if isinstance(item, dict) and item.get("type") in {
+                        "reasoning",
+                        "web_search_call",
+                        "image_generation_call",
+                    }:
+                        yield CodexNativeItemDelta(item)
+                        continue
+                if event_type == "response.reasoning_summary_text.delta":
+                    summary = event.get("delta")
+                    if isinstance(summary, str) and summary:
+                        yield CodexReasoningSummaryDelta(summary)
+                    continue
+                if event_type == "response.completed":
+                    continue
                 delta = _stream_delta_from_event(event)
                 if delta is not None:
                     yield delta
@@ -318,6 +407,8 @@ def _responses_payload(
     reasoning_summary: str | None = None,
     text_verbosity: str | None = None,
     text_format: dict[str, Any] | None = None,
+    prompt_cache_key: str | None = None,
+    tool_choice: str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": model,
@@ -328,6 +419,10 @@ def _responses_payload(
     }
     if tools:
         payload["tools"] = tools
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
+    if prompt_cache_key:
+        payload["prompt_cache_key"] = prompt_cache_key
     include: list[str] = []
     if any(tool.get("type") == "web_search" for tool in tools or []):
         include.append("web_search_call.action.sources")
@@ -713,6 +808,31 @@ def _stream_event_exception(event: dict[str, Any]) -> RuntimeError | None:
     if _is_rate_limit_response(200, error):
         return CodexRateLimitError(f"Codex usage limit or rate limit reached: {error.detail}")
     return RuntimeError(f"Codex stream failed: {error.detail}")
+
+
+def _usage_from_completed_event(event: dict[str, Any]) -> CodexUsage:
+    """Parse optional Responses usage fields without making them mandatory."""
+    response = event.get("response")
+    response = response if isinstance(response, dict) else {}
+    usage = response.get("usage")
+    usage = usage if isinstance(usage, dict) else {}
+    input_details = usage.get("input_tokens_details")
+    input_details = input_details if isinstance(input_details, dict) else {}
+    output_details = usage.get("output_tokens_details")
+    output_details = output_details if isinstance(output_details, dict) else {}
+
+    def integer(value: Any) -> int | None:
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    response_id = response.get("id")
+    return CodexUsage(
+        response_id=response_id if isinstance(response_id, str) else None,
+        input_tokens=integer(usage.get("input_tokens")),
+        cached_tokens=integer(input_details.get("cached_tokens")),
+        cache_write_tokens=integer(input_details.get("cache_write_tokens")),
+        output_tokens=integer(usage.get("output_tokens")),
+        reasoning_tokens=integer(output_details.get("reasoning_tokens")),
+    )
 
 
 def extract_output_text(payload: dict[str, Any]) -> str:

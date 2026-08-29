@@ -7,9 +7,13 @@ from custom_components.codex_assist.codex_client import (
     CODEX_STREAM_TIMEOUT,
     CodexCitationDelta,
     CodexClient,
+    CodexNativeItemDelta,
     CodexRateLimitError,
+    CodexReasoningSummaryDelta,
+    CodexRequestMetrics,
     CodexTextDelta,
     CodexToolCallDelta,
+    CodexUsageDelta,
 )
 
 
@@ -50,6 +54,10 @@ def _event(payload):
     return ["data: " + json.dumps(payload), ""]
 
 
+def _stream_payload(http: FakeHttpClient) -> dict:
+    return json.loads(http.calls[0][2]["content"])
+
+
 @pytest.mark.asyncio
 async def test_stream_turn_yields_text_deltas_and_posts_advanced_options():
     response = FakeStreamResponse(
@@ -76,11 +84,71 @@ async def test_stream_turn_yields_text_deltas_and_posts_advanced_options():
         "Hel",
         "lo",
     ]
-    payload = http.calls[0][2]["json"]
+    payload = _stream_payload(http)
     assert payload["reasoning"] == {"effort": "medium", "summary": "auto"}
     assert payload["include"] == ["reasoning.encrypted_content"]
     assert payload["text"] == {"verbosity": "low"}
     assert http.calls[0][2]["timeout"] == CODEX_STREAM_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_stream_turn_preserves_reasoning_native_state_and_safe_usage():
+    response = FakeStreamResponse(
+        200,
+        _event(
+            {
+                "type": "response.reasoning_summary_text.delta",
+                "delta": "Need a tool.",
+            }
+        )
+        + _event(
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "encrypted_content": "secret-reasoning-state",
+                },
+            }
+        )
+        + _event(
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_1",
+                    "usage": {
+                        "input_tokens": 100,
+                        "input_tokens_details": {"cached_tokens": 80},
+                        "output_tokens": 20,
+                        "output_tokens_details": {"reasoning_tokens": 7},
+                    },
+                },
+            }
+        ),
+    )
+    client = CodexClient(http_client=FakeHttpClient(response), access_token="x")
+    deltas = [
+        delta
+        async for delta in client.stream_turn(model="gpt-5.4", instructions="x", input_items=[])
+    ]
+
+    assert [delta.text for delta in deltas if isinstance(delta, CodexReasoningSummaryDelta)] == [
+        "Need a tool."
+    ]
+    native = next(delta for delta in deltas if isinstance(delta, CodexNativeItemDelta))
+    assert native.item["encrypted_content"] == "secret-reasoning-state"
+    usage = next(delta.usage for delta in deltas if isinstance(delta, CodexUsageDelta))
+    assert (
+        usage.input_tokens,
+        usage.cached_tokens,
+        usage.output_tokens,
+        usage.reasoning_tokens,
+    ) == (
+        100,
+        80,
+        20,
+        7,
+    )
 
 
 def test_stream_timeout_allows_idle_sse_reads():
@@ -113,6 +181,60 @@ async def test_stream_turn_uses_custom_transport_timeout():
 
 
 @pytest.mark.asyncio
+async def test_stream_turn_sends_stable_supplied_prompt_cache_key():
+    http = FakeHttpClient(FakeStreamResponse(200, []))
+    client = CodexClient(http_client=http, access_token="token-1")
+
+    [
+        delta
+        async for delta in client.stream_turn(
+            model="gpt-5.4",
+            instructions="x",
+            input_items=[],
+            prompt_cache_key="ha-codex-assist-opaque",
+        )
+    ]
+
+    assert _stream_payload(http)["prompt_cache_key"] == "ha-codex-assist-opaque"
+
+
+@pytest.mark.asyncio
+async def test_stream_turn_reports_safe_exact_serialized_request_metrics():
+    http = FakeHttpClient(FakeStreamResponse(200, []))
+    client = CodexClient(http_client=http, access_token="token-1")
+    metrics: list[CodexRequestMetrics] = []
+    input_items = [
+        {"role": "user", "content": "private user text"},
+        {
+            "type": "function_call_output",
+            "call_id": "call-1",
+            "output": "private tool result",
+        },
+    ]
+
+    [
+        delta
+        async for delta in client.stream_turn(
+            model="gpt-5.4",
+            instructions="private prompt",
+            input_items=input_items,
+            on_request_metrics=metrics.append,
+        )
+    ]
+
+    assert len(metrics) == 1
+    assert metrics[0].request_bytes == len(http.calls[0][2]["content"])
+    assert metrics[0].instructions_bytes == len(b"private prompt")
+    assert metrics[0].input_bytes == len(
+        json.dumps(input_items, separators=(",", ":")).encode()
+    )
+    assert metrics[0].tools_bytes == 2
+    assert metrics[0].tool_result_bytes == len(
+        json.dumps(input_items[1], separators=(",", ":")).encode()
+    )
+
+
+@pytest.mark.asyncio
 async def test_stream_turn_posts_structured_output_format_with_verbosity():
     response = FakeStreamResponse(200, [])
     http = FakeHttpClient(response)
@@ -139,7 +261,7 @@ async def test_stream_turn_posts_structured_output_format_with_verbosity():
     ]
 
     assert deltas == []
-    assert http.calls[0][2]["json"]["text"] == {
+    assert _stream_payload(http)["text"] == {
         "verbosity": "low",
         "format": text_format,
     }
@@ -321,7 +443,7 @@ async def test_stream_turn_yields_structured_web_citations_and_requests_sources(
         ("IANA Reserved Domains", "https://www.iana.org/help/example-domains"),
         ("IANA Reserved Domains", "https://www.iana.org/help/example-domains"),
     ]
-    assert http.calls[0][2]["json"]["include"] == [
+    assert _stream_payload(http)["include"] == [
         "reasoning.encrypted_content",
         "web_search_call.action.sources",
     ]
@@ -345,7 +467,7 @@ async def test_stream_turn_omits_reasoning_summary_when_off():
     ]
 
     assert deltas == []
-    assert http.calls[0][2]["json"]["reasoning"] == {"effort": "low"}
+    assert _stream_payload(http)["reasoning"] == {"effort": "low"}
 
 
 @pytest.mark.asyncio
@@ -367,7 +489,7 @@ async def test_stream_turn_omits_advanced_options_for_non_reasoning_models():
     ]
 
     assert deltas == []
-    payload = http.calls[0][2]["json"]
+    payload = _stream_payload(http)
     assert "reasoning" not in payload
     assert "include" not in payload
     assert "text" not in payload
