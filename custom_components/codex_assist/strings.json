@@ -58,11 +58,13 @@
             "name": "Advanced chat settings",
             "data": {
               "prompt": "System prompt",
-              "reasoning_effort": "Reasoning effort"
+              "reasoning_effort": "Reasoning effort",
+              "llm_hass_api": "Home Assistant LLM APIs"
             },
             "data_description": {
               "prompt": "Standing instructions applied to Assist conversations.",
-              "reasoning_effort": "How much reasoning supported models should use before answering."
+              "reasoning_effort": "How much reasoning supported models should use before answering.",
+              "llm_hass_api": "Choose the Home Assistant LLM APIs this agent may use."
             }
           },
           "image_settings": {
