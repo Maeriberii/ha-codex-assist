@@ -108,6 +108,10 @@ class CodexAssistConversationEntity(
         text_verbosity = settings.get("text_verbosity", DEFAULT_TEXT_VERBOSITY)
         web_search = bool(settings.get(CONF_WEB_SEARCH, DEFAULT_WEB_SEARCH))
         llm_hass_api = settings.get(CONF_LLM_HASS_API, [llm.LLM_API_ASSIST])
+        if isinstance(llm_hass_api, str):
+            llm_hass_api = [llm_hass_api]
+        elif not isinstance(llm_hass_api, list) or not llm_hass_api:
+            llm_hass_api = [llm.LLM_API_ASSIST]
         citations: list[CodexCitation] = []
 
         response = intent.IntentResponse(language=user_input.language)

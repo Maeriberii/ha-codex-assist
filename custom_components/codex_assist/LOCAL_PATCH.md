@@ -8,6 +8,9 @@ This fork intentionally keeps the following small changes on top of upstream
 The options form lists `llm.async_get_apis(hass)` in Advanced chat settings.
 The selected `str | list[str]` is passed to `chat_log.async_provide_llm_data`.
 The default is only `assist`; configured providers are never auto-enabled.
+Legacy single-string values are normalized to a one-item list. An empty
+submission is rejected by the options flow, and runtime defensively falls back
+to `assist` so `async_provide_llm_data` never receives `[]`.
 
 ## Tool-round final synthesis
 

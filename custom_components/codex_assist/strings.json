@@ -32,7 +32,8 @@
     "error": {
       "authorization_pending": "That code has not been approved yet. Finish signing in in your browser, wait a few seconds, then continue again.",
       "device_code_auth_failed": "Codex sign-in failed. Restart setup and try again.",
-      "device_code_request_failed": "Could not request a Codex device code. Check network access from Home Assistant and try again."
+      "device_code_request_failed": "Could not request a Codex device code. Check network access from Home Assistant and try again.",
+      "select_at_least_one_llm_api": "Select at least one Home Assistant LLM API."
     }
   },
   "options": {

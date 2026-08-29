@@ -138,6 +138,38 @@ def test_options_schema_lists_explicitly_selected_llm_apis(monkeypatch):
     assert selected_default == ["mcp-grafana"]
 
 
+def test_empty_llm_api_selection_is_rejected(monkeypatch):
+    install_homeassistant_fakes(monkeypatch)
+    module = importlib.reload(
+        importlib.import_module("custom_components.codex_assist.config_flow")
+    )
+    async def empty_models(**kwargs):
+        return []
+
+    monkeypatch.setattr(module, "fetch_codex_model_ids", empty_models)
+    flow = module.CodexAssistOptionsFlow()
+    flow.hass = SimpleNamespace()
+    flow.config_entry = SimpleNamespace(data={}, options={})
+
+    result = __import__("asyncio").run(
+        flow.async_step_init(
+            {module.SECTION_ADVANCED_SETTINGS: {module.CONF_LLM_HASS_API: []}}
+        )
+    )
+
+    assert result["type"] == "form"
+    assert result["errors"][module.CONF_LLM_HASS_API] == "select_at_least_one_llm_api"
+
+
+def test_legacy_single_llm_api_is_normalized(monkeypatch):
+    install_homeassistant_fakes(monkeypatch)
+    module = importlib.reload(
+        importlib.import_module("custom_components.codex_assist.config_flow")
+    )
+
+    assert module._llm_api_default({module.CONF_LLM_HASS_API: "assist"}) == ["assist"]
+
+
 def test_section_input_is_flattened_for_existing_runtime_settings(monkeypatch):
     install_homeassistant_fakes(monkeypatch)
     module = importlib.reload(

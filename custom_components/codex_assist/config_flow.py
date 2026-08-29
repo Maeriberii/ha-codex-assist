@@ -189,6 +189,27 @@ class CodexAssistOptionsFlow(config_entries.OptionsFlow):
         defaults = {**self.config_entry.data, **self.config_entry.options}
         if user_input is not None:
             data = _flatten_settings_input(user_input)
+            if CONF_LLM_HASS_API in data and not _normalize_llm_api_selection(
+                data[CONF_LLM_HASS_API]
+            ):
+                model_options = await fetch_codex_model_ids(
+                    http_client=get_async_client(self.hass),
+                    access_token=self.config_entry.data.get(CONF_ACCESS_TOKEN),
+                )
+                defaults = {**self.config_entry.data, **self.config_entry.options}
+                return self.async_show_form(
+                    step_id="init",
+                    data_schema=_settings_schema(
+                        defaults,
+                        model_options=model_options,
+                        llm_apis=llm.async_get_apis(self.hass),
+                    ),
+                    errors={CONF_LLM_HASS_API: "select_at_least_one_llm_api"},
+                )
+            if CONF_LLM_HASS_API in data:
+                data[CONF_LLM_HASS_API] = _normalize_llm_api_selection(
+                    data[CONF_LLM_HASS_API]
+                )
             if CONF_REASONING_SUMMARY in defaults:
                 data[CONF_REASONING_SUMMARY] = defaults[CONF_REASONING_SUMMARY]
             return self.async_create_entry(title="", data=data)
@@ -299,7 +320,16 @@ def _settings_schema(
 def _llm_api_default(defaults: dict[str, Any]) -> str | list[str]:
     """Return selected HA LLM APIs, preserving legacy single selections."""
     selected = defaults.get(CONF_LLM_HASS_API, [llm.LLM_API_ASSIST])
-    return [selected] if isinstance(selected, str) else selected
+    return _normalize_llm_api_selection(selected) or [llm.LLM_API_ASSIST]
+
+
+def _normalize_llm_api_selection(selected: Any) -> list[str]:
+    """Normalize legacy values and reject an empty multiple selection."""
+    if isinstance(selected, str):
+        return [selected]
+    if isinstance(selected, list):
+        return [item for item in selected if isinstance(item, str) and item]
+    return []
 
 
 def _model_schema(
