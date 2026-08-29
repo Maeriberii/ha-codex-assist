@@ -17,6 +17,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import llm
+from homeassistant.helpers.selector import TextSelector
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -306,3 +307,21 @@ def test_structured_output_uses_real_home_assistant_schema_converter() -> None:
     assert text_format["name"] == "porch_state"
     assert text_format["schema"]["required"] == ["state"]
     assert text_format["schema"]["properties"]["state"]["enum"] == ["on", "off"]
+
+
+def test_structured_output_serializes_text_selector_for_strict_codex_schema() -> None:
+    task = SimpleNamespace(
+        name="Home comfort",
+        structure=vol.Schema({vol.Required("summary"): TextSelector()}),
+    )
+    chat_log = SimpleNamespace(llm_api=None)
+
+    text_format = _structured_output_format(task, chat_log)
+
+    assert text_format is not None
+    assert text_format["schema"] == {
+        "type": "object",
+        "properties": {"summary": {"type": "string"}},
+        "required": ["summary"],
+        "additionalProperties": False,
+    }
