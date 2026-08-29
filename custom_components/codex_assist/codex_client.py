@@ -6,10 +6,14 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+import httpx
+
 from .codex_image import image_model_quality, validate_image_size
 
 CODEX_BACKEND_BASE_URL = "https://chatgpt.com/backend-api/codex"
-CODEX_STREAM_TIMEOUT = 300
+# A Responses SSE stream may be quiet while the model reasons or a tool runs.
+# Bound connection setup and writes, but do not treat a quiet open stream as failed.
+CODEX_STREAM_TIMEOUT = httpx.Timeout(connect=10, read=None, write=30, pool=10)
 
 
 class AsyncPostClient(Protocol):

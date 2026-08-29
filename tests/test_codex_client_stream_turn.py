@@ -1,5 +1,6 @@
 import json
 
+import httpx
 import pytest
 
 from custom_components.codex_assist.codex_client import (
@@ -80,6 +81,12 @@ async def test_stream_turn_yields_text_deltas_and_posts_advanced_options():
     assert payload["include"] == ["reasoning.encrypted_content"]
     assert payload["text"] == {"verbosity": "low"}
     assert http.calls[0][2]["timeout"] == CODEX_STREAM_TIMEOUT
+
+
+def test_stream_timeout_allows_idle_sse_reads():
+    assert CODEX_STREAM_TIMEOUT == httpx.Timeout(
+        connect=10, read=None, write=30, pool=10
+    )
 
 
 @pytest.mark.asyncio
