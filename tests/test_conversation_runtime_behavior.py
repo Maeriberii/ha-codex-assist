@@ -44,6 +44,8 @@ class FakeUserInput:
     conversation_id = "conversation-1"
     agent_id = "conversation.codex_assist"
     extra_system_prompt = None
+    context = None
+    text = "test request"
 
     def as_llm_context(self, domain):
         return {"domain": domain}

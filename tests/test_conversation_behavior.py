@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib
 import json
+import sys
+import types
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -83,6 +85,40 @@ def test_request_failure_text_names_blank_transport_error(conversation_module):
     assert conversation_module._request_failure_text(httpx.ReadTimeout("")) == (
         "Codex Assist failed: ReadTimeout"
     )
+
+
+@pytest.mark.asyncio
+async def test_current_turn_authorization_uses_raw_input_and_always_clears(
+    conversation_module,
+    monkeypatch,
+):
+    observed = []
+
+    def async_set_turn_text(hass, context, text):
+        observed.append((hass, context, text))
+        return lambda: observed.append("cleared")
+
+    authorization = types.ModuleType("custom_components.ha_admin_tools.authorization")
+    authorization.async_set_turn_text = async_set_turn_text
+    package = types.ModuleType("custom_components.ha_admin_tools")
+    package.authorization = authorization
+    monkeypatch.setitem(sys.modules, "custom_components.ha_admin_tools", package)
+    monkeypatch.setitem(
+        sys.modules, "custom_components.ha_admin_tools.authorization", authorization
+    )
+
+    entity = object.__new__(conversation_module.CodexAssistConversationEntity)
+    entity.hass = object()
+    user_input = types.SimpleNamespace(context="context-1", text="restart the host")
+
+    async def fail_after_binding(_user_input, _chat_log):
+        raise RuntimeError("expected failure")
+
+    entity._async_handle_message_with_turn = fail_after_binding
+    with pytest.raises(RuntimeError, match="expected failure"):
+        await entity._async_handle_message(user_input, object())
+
+    assert observed == [(entity.hass, "context-1", "restart the host"), "cleared"]
     assert conversation_module._request_failure_text(RuntimeError("backend failed")) == (
         "Codex Assist failed: backend failed"
     )
@@ -141,7 +177,7 @@ async def test_codex_stream_to_assistant_deltas_yields_text_and_tool_inputs(
 ):
     called = False
 
-    def mark_called():
+    def mark_called(_tool_call):
         nonlocal called
         called = True
 
@@ -168,6 +204,59 @@ async def test_codex_stream_to_assistant_deltas_yields_text_and_tool_inputs(
     assert deltas[2]["tool_calls"][0].id == "call-1"
     assert deltas[2]["tool_calls"][0].tool_name == "HassTurnOn"
     assert called is True
+
+
+@pytest.mark.asyncio
+async def test_tool_round_limit_forces_one_no_tools_synthesis(conversation_module):
+    calls = []
+
+    async def run_iteration(iteration, force_final):
+        calls.append((iteration, force_final))
+        return not force_final
+
+    await conversation_module._async_run_tool_iterations(
+        max_tool_iterations=2,
+        run_iteration=run_iteration,
+    )
+
+    assert calls == [(1, False), (2, False), (3, True)]
+
+
+@pytest.mark.asyncio
+async def test_forced_synthesis_retries_one_transport_failure_before_text(conversation_module):
+    calls = 0
+    delays = []
+
+    async def run_attempt(_on_text_delta):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.RemoteProtocolError("incomplete chunked read")
+        return False
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    assert await conversation_module._async_retry_forced_synthesis(
+        run_attempt, sleep=sleep
+    ) is False
+    assert calls == 2
+    assert delays == [0.5]
+
+
+@pytest.mark.asyncio
+async def test_forced_synthesis_does_not_retry_after_text(conversation_module):
+    calls = 0
+
+    async def run_attempt(on_text_delta):
+        nonlocal calls
+        calls += 1
+        on_text_delta("partial")
+        raise httpx.RemoteProtocolError("incomplete chunked read")
+
+    with pytest.raises(httpx.RemoteProtocolError):
+        await conversation_module._async_retry_forced_synthesis(run_attempt)
+    assert calls == 1
 
 
 def test_codex_tools_from_chat_log_converts_ha_llm_api_tools(conversation_module):
@@ -334,6 +423,33 @@ async def test_stream_codex_turn_into_chat_log_calls_chat_log_stream_api(
             "text_format": None,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_no_tools_synthesis_rejects_unexpected_tool_call(conversation_module):
+    chat_log = FakeChatLog()
+    codex = FakeCodex(
+        [
+            CodexToolCallDelta(
+                CodexToolCall(id="call-1", name="HassTurnOn", arguments={})
+            )
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="tools being disabled"):
+        await conversation_module._stream_codex_turn_into_chat_log(
+            chat_log=chat_log,
+            codex=codex,
+            entity_id="conversation.codex_assist",
+            model="gpt-5.4",
+            instructions="Synthesize.",
+            input_items=[],
+            tools=[],
+            reasoning_effort="low",
+            reasoning_summary="auto",
+            text_verbosity="medium",
+            allow_tools=False,
+        )
 
 
 @pytest.mark.asyncio
