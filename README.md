@@ -5,8 +5,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/itsreverence/ha-codex-assist/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/itsreverence/ha-codex-assist?style=for-the-badge"></a>
-  <a href="https://github.com/itsreverence/ha-codex-assist/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/itsreverence/ha-codex-assist/ci.yml?branch=main&style=for-the-badge&label=CI"></a>
+  <a href="https://github.com/Maeriberii/ha-codex-assist/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/Maeriberii/ha-codex-assist?style=for-the-badge"></a>
+  <a href="https://github.com/Maeriberii/ha-codex-assist/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Maeriberii/ha-codex-assist/ci.yml?branch=main&style=for-the-badge&label=CI"></a>
   <a href="https://www.hacs.xyz/docs/use/repositories/dashboard/"><img alt="Available in HACS" src="https://img.shields.io/badge/HACS-Default-41BDF5?style=for-the-badge"></a>
 </p>
 
@@ -20,7 +20,7 @@ Codex Assist signs in with Codex-style ChatGPT device-code auth. It keeps device
 
 Requirements: Home Assistant `2026.6.0` or newer, HACS, and a ChatGPT account or plan with Codex access.
 
-[![Open HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=itsreverence&repository=ha-codex-assist&category=integration)
+[![Open HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Maeriberii&repository=ha-codex-assist&category=integration)
 [![Add the Codex Assist integration](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=codex_assist)
 
 1. In Home Assistant, open **HACS → Integrations**.

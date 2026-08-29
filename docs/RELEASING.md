@@ -2,9 +2,24 @@
 
 This checklist is for maintainers.
 
+## Downstream release convention
+
+The `Maeriberii/ha-codex-assist` fork uses normal semantic versions for
+deployable HACS releases. Do not bump the integration version for ordinary
+commits. A release is a dedicated commit that synchronizes the version in
+`custom_components/codex_assist/manifest.json`, `pyproject.toml`, and `uv.lock`,
+then is tagged and published as the matching GitHub release (for example,
+`0.5.0` / `v0.5.0`). HACS discovers the newer build from that tag/release and
+the version in the tagged manifest.
+
+Downstream release notes must identify the fork-specific changes and retain
+the three intentional downstream patches: multiple Home Assistant LLM APIs,
+unbounded Responses SSE reads, and guaranteed final no-tools synthesis. Keep
+the release commit separate from unrelated follow-up work.
+
 ## Prepare
 
-1. Update the version in `custom_components/codex_assist/manifest.json` and `pyproject.toml`, then refresh `uv.lock`.
+1. Update the version in `custom_components/codex_assist/manifest.json` and `pyproject.toml`, then refresh `uv.lock`. Do this only for a deployable downstream release, not for every commit.
 2. Confirm those `X.Y.Z` values match the planned `vX.Y.Z` tag.
 3. Review README, wiki, security, support, and compatibility guidance.
 4. Verify brand assets and screenshots contain no private data. For PNG icons, confirm the corner alpha is transparent:
