@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import importlib
 import json
-import sys
-import types
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -86,42 +84,6 @@ def test_request_failure_text_names_blank_transport_error(conversation_module):
         "Codex Assist failed: ReadTimeout"
     )
 
-
-@pytest.mark.asyncio
-async def test_current_turn_authorization_uses_raw_input_and_always_clears(
-    conversation_module,
-    monkeypatch,
-):
-    observed = []
-
-    def async_set_turn_text(hass, context, text):
-        observed.append((hass, context, text))
-        return lambda: observed.append("cleared")
-
-    authorization = types.ModuleType("custom_components.ha_admin_tools.authorization")
-    authorization.async_set_turn_text = async_set_turn_text
-    package = types.ModuleType("custom_components.ha_admin_tools")
-    package.authorization = authorization
-    monkeypatch.setitem(sys.modules, "custom_components.ha_admin_tools", package)
-    monkeypatch.setitem(
-        sys.modules, "custom_components.ha_admin_tools.authorization", authorization
-    )
-
-    entity = object.__new__(conversation_module.CodexAssistConversationEntity)
-    entity.hass = object()
-    user_input = types.SimpleNamespace(context="context-1", text="restart the host")
-
-    async def fail_after_binding(_user_input, _chat_log):
-        raise RuntimeError("expected failure")
-
-    entity._async_handle_message_with_turn = fail_after_binding
-    with pytest.raises(RuntimeError, match="expected failure"):
-        await entity._async_handle_message(user_input, object())
-
-    assert observed == [(entity.hass, "context-1", "restart the host"), "cleared"]
-    assert conversation_module._request_failure_text(RuntimeError("backend failed")) == (
-        "Codex Assist failed: backend failed"
-    )
 
 
 @pytest.mark.asyncio

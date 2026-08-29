@@ -3,15 +3,6 @@
 This fork intentionally keeps the following small changes on top of upstream
 `v0.4.2`. They are integration contracts, not generic Codex Assist features.
 
-## Request-scoped administration authorization
-
-`CodexAssistConversationEntity._async_handle_message` supplies the original
-`ConversationInput.text` to `ha_admin_tools.authorization.async_set_turn_text`
-under the request `Context.id`, and always clears it in `finally`. This is the
-authorization boundary for disruptive Home Assistant operations. Chat history,
-model-generated text, and `LLMContext` are not substitutes for the current raw
-turn.
-
 ## Explicit Home Assistant LLM API selection
 
 The options form lists `llm.async_get_apis(hass)` in Advanced chat settings.

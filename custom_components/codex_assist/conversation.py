@@ -96,33 +96,7 @@ class CodexAssistConversationEntity(
         user_input: conversation.ConversationInput,
         chat_log: conversation.ChatLog,
     ) -> conversation.ConversationResult:
-        """Bind the real incoming turn to disruptive tools for this request only."""
-        try:
-            from custom_components.ha_admin_tools.authorization import async_set_turn_text
-        except ModuleNotFoundError as err:
-            if err.name not in {
-                "custom_components.ha_admin_tools",
-                "custom_components.ha_admin_tools.authorization",
-            }:
-                raise
-            # The downstream security integration is optional for ordinary
-            # Codex Assist installs. Without it, no ha_admin_tools capability
-            # exists to authorize.
-            return await self._async_handle_message_with_turn(user_input, chat_log)
-
-        clear_turn_text = async_set_turn_text(
-            self.hass, user_input.context, user_input.text
-        )
-        try:
-            return await self._async_handle_message_with_turn(user_input, chat_log)
-        finally:
-            clear_turn_text()
-
-    async def _async_handle_message_with_turn(
-        self,
-        user_input: conversation.ConversationInput,
-        chat_log: conversation.ChatLog,
-    ) -> conversation.ConversationResult:
+        """Handle the ordinary Home Assistant conversation flow."""
         settings = {**self.entry.data, **self.entry.options}
         model = settings.get("model", "gpt-5.4")
         prompt = settings.get(
