@@ -412,11 +412,29 @@ def _structured_output_format(
         if chat_log.llm_api is not None
         else llm.selector_serializer
     )
+    schema = convert(task.structure, custom_serializer=custom_serializer)
+    _apply_codex_strict_schema(schema)
     return {
         "type": "json_schema",
         "name": _structured_output_name(task.name),
-        "schema": convert(task.structure, custom_serializer=custom_serializer),
+        "schema": schema,
     }
+
+
+def _apply_codex_strict_schema(schema: Any) -> None:
+    """Make object schemas compatible with Codex strict JSON-schema output."""
+    if not isinstance(schema, dict):
+        return
+    for value in schema.values():
+        if isinstance(value, (dict, list)):
+            if isinstance(value, dict):
+                _apply_codex_strict_schema(value)
+            else:
+                for item in value:
+                    _apply_codex_strict_schema(item)
+    if schema.get("type") == "object" and isinstance(schema.get("properties"), dict):
+        schema["additionalProperties"] = False
+        schema["required"] = list(schema["properties"])
 
 
 def _structured_output_name(name: str) -> str:
