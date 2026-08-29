@@ -34,6 +34,7 @@ from custom_components.codex_assist.config_flow import (
     SECTION_ADVANCED_SETTINGS,
     SECTION_CHAT_SETTINGS,
     SECTION_IMAGE_SETTINGS,
+    SECTION_RUNTIME_ORCHESTRATION,
 )
 from custom_components.codex_assist.diagnostics import (
     REDACTED,
@@ -265,6 +266,7 @@ async def test_options_flow_uses_real_home_assistant_contract(
         SECTION_CHAT_SETTINGS,
         SECTION_ADVANCED_SETTINGS,
         SECTION_IMAGE_SETTINGS,
+        SECTION_RUNTIME_ORCHESTRATION,
     ]
 
     result = await hass.config_entries.options.async_configure(
@@ -282,6 +284,14 @@ async def test_options_flow_uses_real_home_assistant_contract(
             SECTION_IMAGE_SETTINGS: {
                 "image_model": "gpt-image-2-medium",
                 "image_size": "1024x1024",
+            },
+            SECTION_RUNTIME_ORCHESTRATION: {
+                "tool_iterations": 8,
+                "stream_connect_timeout": 10,
+                "stream_write_timeout": 30,
+                "stream_pool_timeout": 10,
+                "stream_read_timeout": 0,
+                "image_generation_timeout": 300,
             },
         },
     )

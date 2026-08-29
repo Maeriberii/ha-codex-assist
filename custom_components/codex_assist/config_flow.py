@@ -23,6 +23,11 @@ from .codex_image import (
     IMAGE_SIZE_OPTIONS,
 )
 from .codex_models import DEFAULT_CODEX_MODELS, fetch_codex_model_ids
+from .runtime_options import (
+    RUNTIME_OPTION_SPECS,
+    RuntimeOptionSpec,
+    invalid_runtime_options,
+)
 
 CONF_ACCESS_TOKEN = "access_token"
 CONF_PROMPT = "prompt"
@@ -37,6 +42,7 @@ CONF_WEB_SEARCH = "web_search"
 SECTION_CHAT_SETTINGS = "chat_settings"
 SECTION_ADVANCED_SETTINGS = "advanced_settings"
 SECTION_IMAGE_SETTINGS = "image_settings"
+SECTION_RUNTIME_ORCHESTRATION = "runtime_orchestration"
 DEFAULT_MODEL = "gpt-5.4"
 DEFAULT_PROMPT = "You are a concise Home Assistant Assist conversation agent."
 DEFAULT_REASONING_EFFORT = "low"
@@ -189,6 +195,21 @@ class CodexAssistOptionsFlow(config_entries.OptionsFlow):
         defaults = {**self.config_entry.data, **self.config_entry.options}
         if user_input is not None:
             data = _flatten_settings_input(user_input)
+            invalid = invalid_runtime_options(data)
+            if invalid:
+                model_options = await fetch_codex_model_ids(
+                    http_client=get_async_client(self.hass),
+                    access_token=self.config_entry.data.get(CONF_ACCESS_TOKEN),
+                )
+                return self.async_show_form(
+                    step_id="init",
+                    data_schema=_settings_schema(
+                        defaults,
+                        model_options=model_options,
+                        llm_apis=llm.async_get_apis(self.hass),
+                    ),
+                    errors={key: "value_out_of_range" for key in invalid},
+                )
             if CONF_LLM_HASS_API in data and not _normalize_llm_api_selection(
                 data[CONF_LLM_HASS_API]
             ):
@@ -313,8 +334,33 @@ def _settings_schema(
                 ),
                 {"collapsed": True},
             ),
+            vol.Required(SECTION_RUNTIME_ORCHESTRATION): section(
+                vol.Schema(
+                    {
+                        vol.Optional(
+                            spec.key,
+                            default=defaults.get(spec.key, spec.default),
+                        ): _number_selector(spec)
+                        for spec in RUNTIME_OPTION_SPECS
+                    }
+                ),
+                {"collapsed": True},
+            ),
         }
     )
+
+
+def _number_selector(spec: RuntimeOptionSpec) -> selector.NumberSelector:
+    """Build a bounded Home Assistant number selector from one runtime spec."""
+    config: dict[str, Any] = {
+        "min": spec.minimum,
+        "max": spec.maximum,
+        "step": 1,
+        "mode": selector.NumberSelectorMode.BOX,
+    }
+    if spec.unit is not None:
+        config["unit_of_measurement"] = spec.unit
+    return selector.NumberSelector(selector.NumberSelectorConfig(**config))
 
 
 def _llm_api_default(defaults: dict[str, Any]) -> str | list[str]:
@@ -354,6 +400,7 @@ def _flatten_settings_input(user_input: Mapping[str, Any]) -> dict[str, Any]:
         SECTION_CHAT_SETTINGS,
         SECTION_ADVANCED_SETTINGS,
         SECTION_IMAGE_SETTINGS,
+        SECTION_RUNTIME_ORCHESTRATION,
     ):
         section_data = user_input.get(section_name)
         if isinstance(section_data, Mapping):

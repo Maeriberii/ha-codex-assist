@@ -76,14 +76,17 @@ def test_options_schema_groups_everyday_advanced_and_image_controls(monkeypatch)
         module.SECTION_CHAT_SETTINGS,
         module.SECTION_ADVANCED_SETTINGS,
         module.SECTION_IMAGE_SETTINGS,
+        module.SECTION_RUNTIME_ORCHESTRATION,
     ]
     assert sections[module.SECTION_CHAT_SETTINGS].options == {"collapsed": False}
     assert sections[module.SECTION_ADVANCED_SETTINGS].options == {"collapsed": True}
     assert sections[module.SECTION_IMAGE_SETTINGS].options == {"collapsed": True}
+    assert sections[module.SECTION_RUNTIME_ORCHESTRATION].options == {"collapsed": True}
 
     chat = _section_fields(schema, module.SECTION_CHAT_SETTINGS)
     advanced = _section_fields(schema, module.SECTION_ADVANCED_SETTINGS)
     images = _section_fields(schema, module.SECTION_IMAGE_SETTINGS)
+    runtime = _section_fields(schema, module.SECTION_RUNTIME_ORCHESTRATION)
 
     assert list(chat) == ["model", "text_verbosity", "web_search"]
     assert [option.value for option in chat["model"].config.options] == ["gpt-5.4"]
@@ -103,6 +106,22 @@ def test_options_schema_groups_everyday_advanced_and_image_controls(monkeypatch)
         "1536x1024",
         "1024x1536",
     ]
+
+    assert list(runtime) == [
+        "tool_iterations",
+        "stream_connect_timeout",
+        "stream_write_timeout",
+        "stream_pool_timeout",
+        "stream_read_timeout",
+        "image_generation_timeout",
+    ]
+    runtime_schema = _flat_fields(schema)[module.SECTION_RUNTIME_ORCHESTRATION].schema.schema
+    runtime_schema = {key.key: key for key in runtime_schema}
+    assert runtime_schema["tool_iterations"].default == 8
+    assert runtime_schema["stream_read_timeout"].default == 0
+    assert runtime["stream_read_timeout"].config.min == 0
+    assert runtime["stream_read_timeout"].config.max == 3600
+    assert runtime["stream_read_timeout"].config.unit_of_measurement == "s"
 
     all_fields = {*chat, *advanced, *images}
     assert "reasoning_summary" not in all_fields
@@ -168,6 +187,33 @@ def test_legacy_single_llm_api_is_normalized(monkeypatch):
     )
 
     assert module._llm_api_default({module.CONF_LLM_HASS_API: "assist"}) == ["assist"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_runtime_option_is_rejected_by_options_flow(monkeypatch):
+    install_homeassistant_fakes(monkeypatch)
+    module = importlib.reload(
+        importlib.import_module("custom_components.codex_assist.config_flow")
+    )
+
+    async def empty_models(**kwargs):
+        return []
+
+    monkeypatch.setattr(module, "fetch_codex_model_ids", empty_models)
+    flow = module.CodexAssistOptionsFlow()
+    flow.hass = SimpleNamespace()
+    flow.config_entry = SimpleNamespace(data={}, options={})
+
+    result = await flow.async_step_init(
+        {
+            module.SECTION_RUNTIME_ORCHESTRATION: {
+                "tool_iterations": 0,
+            }
+        }
+    )
+
+    assert result["type"] == "form"
+    assert result["errors"]["tool_iterations"] == "value_out_of_range"
 
 
 def test_section_input_is_flattened_for_existing_runtime_settings(monkeypatch):

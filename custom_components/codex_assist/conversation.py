@@ -45,8 +45,12 @@ from .config_flow import (
     DEFAULT_WEB_SEARCH,
 )
 from .error_formatting import request_failure_text
+from .runtime_options import (
+    DEFAULT_TOOL_ITERATIONS,
+    normalize_runtime_options,
+)
 
-MAX_CONVERSATION_TOOL_ITERATIONS = 8
+MAX_CONVERSATION_TOOL_ITERATIONS = DEFAULT_TOOL_ITERATIONS
 MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_ATTACHMENTS = 4
 MAX_TOTAL_IMAGE_ATTACHMENT_BYTES = 20 * 1024 * 1024
@@ -98,6 +102,7 @@ class CodexAssistConversationEntity(
     ) -> conversation.ConversationResult:
         """Handle the ordinary Home Assistant conversation flow."""
         settings = {**self.entry.data, **self.entry.options}
+        runtime_options = normalize_runtime_options(settings)
         model = settings.get("model", "gpt-5.4")
         prompt = settings.get(
             "prompt",
@@ -149,7 +154,12 @@ class CodexAssistConversationEntity(
             )
             return conversation.async_get_result_from_chat_log(user_input, chat_log)
 
-        codex = CodexClient(http_client=http_client, access_token=tokens.access_token)
+        codex = CodexClient(
+            http_client=http_client,
+            access_token=tokens.access_token,
+            stream_timeout=runtime_options.stream_timeout,
+            image_generation_timeout=runtime_options.image_generation_timeout,
+        )
         async def stream_turn_with_auth_retry(
             *,
             tools: list[dict[str, Any]],
@@ -195,7 +205,12 @@ class CodexAssistConversationEntity(
                         refresh_err,
                     )
                     return None
-                codex = CodexClient(http_client=http_client, access_token=tokens.access_token)
+                codex = CodexClient(
+                    http_client=http_client,
+                    access_token=tokens.access_token,
+                    stream_timeout=runtime_options.stream_timeout,
+                    image_generation_timeout=runtime_options.image_generation_timeout,
+                )
                 try:
                     return await stream_with(codex)
                 except CodexAuthenticationError as retry_err:
@@ -230,7 +245,7 @@ class CodexAssistConversationEntity(
 
         try:
             await _async_run_tool_iterations(
-                max_tool_iterations=MAX_CONVERSATION_TOOL_ITERATIONS,
+                max_tool_iterations=runtime_options.tool_iterations,
                 run_iteration=run_tool_iteration,
             )
             if reauth_required:

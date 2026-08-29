@@ -78,9 +78,31 @@
               "image_model": "Default quality for images created through Home Assistant AI Task.",
               "image_size": "Default shape and resolution for generated images."
             }
+          },
+          "runtime_orchestration": {
+            "name": "Runtime / Orchestration",
+            "data": {
+              "tool_iterations": "Tool-capable model rounds",
+              "stream_connect_timeout": "Stream connect timeout",
+              "stream_write_timeout": "Stream write timeout",
+              "stream_pool_timeout": "Stream connection-pool timeout",
+              "stream_read_timeout": "Stream read timeout",
+              "image_generation_timeout": "Image generation timeout"
+            },
+            "data_description": {
+              "tool_iterations": "Maximum consecutive model rounds that may request tools. Parallel calls in one round count as one.",
+              "stream_connect_timeout": "Maximum seconds to establish a Codex Responses connection.",
+              "stream_write_timeout": "Maximum seconds to send a Codex Responses request.",
+              "stream_pool_timeout": "Maximum seconds to wait for an HTTP connection from the pool.",
+              "stream_read_timeout": "Maximum seconds between stream reads. 0 means Disabled / unlimited for quiet SSE streams.",
+              "image_generation_timeout": "Maximum seconds to wait for image generation."
+            }
           }
         }
       }
+    },
+    "error": {
+      "value_out_of_range": "Enter a value within the allowed range."
     }
   }
 }

@@ -72,7 +72,11 @@ async def test_generate_image_uses_codex_responses_image_generation_tool():
         )
     )
     http = FakeHttpClient(response)
-    client = CodexClient(http_client=http, access_token="token-1")
+    client = CodexClient(
+        http_client=http,
+        access_token="token-1",
+        image_generation_timeout=777,
+    )
 
     result = await client.generate_image(
         prompt="draw a tidy smart home dashboard icon",
@@ -99,6 +103,7 @@ async def test_generate_image_uses_codex_responses_image_generation_tool():
     assert method == "POST"
     assert url == "https://chatgpt.com/backend-api/codex/responses"
     assert kwargs["headers"]["Accept"] == "text/event-stream"
+    assert kwargs["timeout"] == 777
     assert payload["model"] == "gpt-5.4"
     assert payload["stream"] is True
     assert payload["tools"] == [

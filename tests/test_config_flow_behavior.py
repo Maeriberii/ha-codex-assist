@@ -164,6 +164,22 @@ def test_web_search_option_is_default_off_and_preserves_opt_in(config_flow_modul
     assert _section_defaults(enabled_schema, section_name)["web_search"] is True
 
 
+def test_old_entry_defaults_runtime_options(config_flow_module):
+    schema = config_flow_module._settings_schema({}, model_options=["gpt-5.4"])
+    defaults = _section_defaults(
+        schema, config_flow_module.SECTION_RUNTIME_ORCHESTRATION
+    )
+
+    assert defaults == {
+        "tool_iterations": 8,
+        "stream_connect_timeout": 10,
+        "stream_write_timeout": 30,
+        "stream_pool_timeout": 10,
+        "stream_read_timeout": 0,
+        "image_generation_timeout": 300,
+    }
+
+
 def _reconfigure_entry(**overrides):
     data = {
         "model": "gpt-5.4",

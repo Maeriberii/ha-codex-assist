@@ -32,6 +32,7 @@ flowchart LR
 - **AI Task entity** registers a native provider for text, structured data, supported image attachments, and image generation.
 - **Runtime token coordinator** serializes refresh-token rotation per config entry. Concurrent Conversation and AI Task requests reuse the winning refresh instead of invalidating one another.
 - **Codex client** sends requests to the Codex-compatible service interface and normalizes its response stream.
+- **Runtime options** are normalized once per request. They provide bounded tool-capable model rounds and per-client connect, write, pool, read, and image-generation timeouts. The default stream read timeout is unbounded because Responses SSE streams may be quiet while work is in progress.
 - **Hosted web search** is an explicit option. When enabled, it adds the backend `web_search` tool and converts structured URL annotations into a validated source card. Unsupported or unsafe citation URLs are discarded.
 - **Assist tool bridge** maps model-requested device actions into Home Assistant's Assist LLM API. It does not call services directly.
 
@@ -44,6 +45,8 @@ flowchart LR
 5. Home Assistant validates and executes the tool call using its normal exposed-entity controls.
 6. When hosted search is enabled, Codex Assist keeps validated citations in a displayed card and instructs the model to keep raw URLs and source blocks out of spoken prose.
 7. Codex Assist returns the final response to Home Assistant.
+
+The conversation orchestrator permits the configured number of consecutive tool-capable model rounds (8 by default, bounded to 1–20). Parallel calls within a round count once. If the budget is exhausted, it performs exactly one final synthesis with tools disabled; the existing interrupted-synthesis retry remains in effect.
 
 ## AI Task flow
 

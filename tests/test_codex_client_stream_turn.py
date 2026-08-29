@@ -90,6 +90,29 @@ def test_stream_timeout_allows_idle_sse_reads():
 
 
 @pytest.mark.asyncio
+async def test_stream_turn_uses_custom_transport_timeout():
+    response = FakeStreamResponse(200, [])
+    http = FakeHttpClient(response)
+    timeout = httpx.Timeout(connect=12, read=90, write=45, pool=17)
+    client = CodexClient(
+        http_client=http,
+        access_token="token-1",
+        stream_timeout=timeout,
+    )
+
+    [
+        delta
+        async for delta in client.stream_turn(
+            model="gpt-5.4",
+            instructions="Be concise.",
+            input_items=[{"role": "user", "content": "ping"}],
+        )
+    ]
+
+    assert http.calls[0][2]["timeout"] == timeout
+
+
+@pytest.mark.asyncio
 async def test_stream_turn_posts_structured_output_format_with_verbosity():
     response = FakeStreamResponse(200, [])
     http = FakeHttpClient(response)
