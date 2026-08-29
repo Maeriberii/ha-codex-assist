@@ -46,7 +46,7 @@ from .config_flow import (
 )
 from .error_formatting import request_failure_text
 
-MAX_TOOL_ITERATIONS = 5
+MAX_CONVERSATION_TOOL_ITERATIONS = 8
 MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_ATTACHMENTS = 4
 MAX_TOTAL_IMAGE_ATTACHMENT_BYTES = 20 * 1024 * 1024
@@ -230,7 +230,7 @@ class CodexAssistConversationEntity(
 
         try:
             await _async_run_tool_iterations(
-                max_tool_iterations=MAX_TOOL_ITERATIONS,
+                max_tool_iterations=MAX_CONVERSATION_TOOL_ITERATIONS,
                 run_iteration=run_tool_iteration,
             )
             if reauth_required:
@@ -285,6 +285,10 @@ async def _async_run_tool_iterations(
     for iteration in range(1, max_tool_iterations + 1):
         if not await run_iteration(iteration, False):
             return
+    LOGGER.info(
+        "Codex Assist exhausted %d tool-capable iterations; forcing final synthesis",
+        max_tool_iterations,
+    )
     await run_iteration(max_tool_iterations + 1, True)
 
 

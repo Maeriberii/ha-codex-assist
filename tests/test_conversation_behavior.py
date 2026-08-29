@@ -185,6 +185,54 @@ async def test_tool_round_limit_forces_one_no_tools_synthesis(conversation_modul
 
 
 @pytest.mark.asyncio
+async def test_tool_round_budget_allows_chain_longer_than_previous_limit(
+    conversation_module,
+):
+    calls = []
+
+    async def run_iteration(iteration, force_final):
+        calls.append((iteration, force_final))
+        return iteration < 6
+
+    await conversation_module._async_run_tool_iterations(
+        max_tool_iterations=8,
+        run_iteration=run_iteration,
+    )
+
+    assert calls == [
+        (1, False),
+        (2, False),
+        (3, False),
+        (4, False),
+        (5, False),
+        (6, False),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_full_tool_round_budget_forces_exactly_one_final_synthesis(
+    conversation_module, caplog
+):
+    calls = []
+
+    async def run_iteration(iteration, force_final):
+        calls.append((iteration, force_final))
+        return not force_final
+
+    with caplog.at_level("INFO"):
+        await conversation_module._async_run_tool_iterations(
+            max_tool_iterations=conversation_module.MAX_CONVERSATION_TOOL_ITERATIONS,
+            run_iteration=run_iteration,
+        )
+
+    assert calls == [
+        (iteration, False)
+        for iteration in range(1, conversation_module.MAX_CONVERSATION_TOOL_ITERATIONS + 1)
+    ] + [(conversation_module.MAX_CONVERSATION_TOOL_ITERATIONS + 1, True)]
+    assert "exhausted 8 tool-capable iterations" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_forced_synthesis_retries_one_transport_failure_before_text(conversation_module):
     calls = 0
     delays = []

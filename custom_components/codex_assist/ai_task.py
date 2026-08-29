@@ -36,7 +36,6 @@ from .config_flow import (
     DEFAULT_WEB_SEARCH,
 )
 from .conversation import (
-    MAX_TOOL_ITERATIONS,
     _codex_input_from_chat_log,
     _codex_tools_from_chat_log,
     _instructions_from_chat_log,
@@ -44,6 +43,8 @@ from .conversation import (
     _stream_codex_turn_into_chat_log,
 )
 from .error_formatting import request_failure_text
+
+MAX_AI_TASK_TOOL_ITERATIONS = 5
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -287,7 +288,7 @@ async def _run_codex_ai_task_chat_log(
     web_search: bool = False,
 ) -> None:
     """Run Codex over an AI Task chat log with one auth refresh retry."""
-    for _iteration in range(MAX_TOOL_ITERATIONS):
+    for _iteration in range(MAX_AI_TASK_TOOL_ITERATIONS):
         try:
             await _stream_codex_turn_into_chat_log(
                 chat_log=chat_log,

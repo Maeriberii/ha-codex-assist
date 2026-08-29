@@ -14,10 +14,10 @@ to `assist` so `async_provide_llm_data` never receives `[]`.
 
 ## Tool-round final synthesis
 
-`MAX_TOOL_ITERATIONS` is the count of tool-capable model rounds. If all of them
-request tools, one no-tools synthesis request follows, producing a real final
-assistant message. A synthesis interrupted by `RemoteProtocolError` or
-`ReadError` is retried once after 0.5 seconds only before a text delta emitted.
+`MAX_CONVERSATION_TOOL_ITERATIONS` allows eight tool-capable model rounds. If
+all of them request tools, one no-tools synthesis request follows, producing a
+real final assistant message. A synthesis interrupted by `RemoteProtocolError`
+or `ReadError` is retried once after 0.5 seconds only before a text delta emitted.
 
 ## Streaming timeout
 
