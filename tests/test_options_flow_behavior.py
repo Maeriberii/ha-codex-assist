@@ -93,6 +93,7 @@ def test_options_schema_groups_everyday_advanced_and_image_controls(monkeypatch)
     assert chat["text_verbosity"].config.options == ["low", "medium", "high"]
 
     assert list(advanced) == ["prompt", "reasoning_effort"]
+    assert advanced["prompt"].config.multiline is True
     assert advanced["reasoning_effort"].config.options == ["low", "medium", "high"]
 
     assert list(images) == ["image_model", "image_size"]
@@ -283,3 +284,26 @@ async def test_options_submission_preserves_hidden_reasoning_summary(monkeypatch
 
     assert result["type"] == "create_entry"
     assert result["data"]["reasoning_summary"] == "detailed"
+
+
+@pytest.mark.asyncio
+async def test_options_submission_preserves_multiline_prompt_exactly(monkeypatch):
+    install_homeassistant_fakes(monkeypatch)
+    module = importlib.reload(
+        importlib.import_module("custom_components.codex_assist.config_flow")
+    )
+    prompt = "# Role\n\n- Read first\n- Preserve formatting\n\n## Rules\nUse exact text.\n"
+    flow = module.CodexAssistOptionsFlow()
+    flow.config_entry = SimpleNamespace(data={}, options={})
+
+    result = await flow.async_step_init(
+        {
+            module.SECTION_ADVANCED_SETTINGS: {
+                "prompt": prompt,
+                "reasoning_effort": "low",
+            }
+        }
+    )
+
+    assert result["type"] == "create_entry"
+    assert result["data"]["prompt"] == prompt
