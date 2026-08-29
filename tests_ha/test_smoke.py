@@ -8,15 +8,28 @@ calls are stubbed.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
+import voluptuous as vol
 from homeassistant.components import conversation
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import Context, HomeAssistant
+from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import llm
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.codex_assist import DOMAIN
-from custom_components.codex_assist.codex_client import CodexClient, CodexTextDelta
+from custom_components.codex_assist.ai_task import _structured_output_format
+from custom_components.codex_assist.codex_client import (
+    CodexCitation,
+    CodexCitationDelta,
+    CodexClient,
+    CodexTextDelta,
+    CodexToolCall,
+    CodexToolCallDelta,
+)
 from custom_components.codex_assist.diagnostics import (
     REDACTED,
     async_get_config_entry_diagnostics,
@@ -93,6 +106,127 @@ async def test_conversation_turn_streams_codex_reply(
     assert speech == "The porch light is on."
 
 
+async def test_web_search_citations_are_displayable_but_not_spoken(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = await _setup_entry(hass)
+    hass.config_entries.async_update_entry(entry, options={"web_search": True})
+
+    async def fake_stream_turn(self: CodexClient, **kwargs: object):
+        tools = kwargs["tools"]
+        assert isinstance(tools, list)
+        assert {"type": "web_search"} in tools
+        yield CodexTextDelta("IANA maintains the reserved domains.")
+        yield CodexCitationDelta(
+            CodexCitation(
+                title="IANA Reserved Domains",
+                url="https://www.iana.org/help/example-domains",
+                start_index=0,
+                end_index=4,
+            )
+        )
+
+    monkeypatch.setattr(CodexClient, "stream_turn", fake_stream_turn)
+
+    result = await conversation.async_converse(
+        hass,
+        "Who maintains the reserved domains?",
+        None,
+        Context(),
+        agent_id="conversation.codex_assist",
+    )
+
+    assert result.response.speech["plain"]["speech"] == ("IANA maintains the reserved domains.")
+    assert result.response.card["simple"] == {
+        "title": "Sources",
+        "content": ("- IANA Reserved Domains — <https://www.iana.org/help/example-domains>"),
+    }
+
+
+async def test_multi_turn_web_search_sources_are_not_spoken_after_ha_tool_call(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = await _setup_entry(hass)
+    hass.config_entries.async_update_entry(entry, options={"web_search": True})
+
+    fake_tool = SimpleNamespace(
+        name="HassTestTool",
+        description="A harmless test tool",
+        parameters=vol.Schema({}),
+    )
+
+    class FakeApiInstance:
+        api_prompt = "A harmless test tool is available."
+        tools = [fake_tool]
+        custom_serializer = None
+
+        async def async_call_tool(self, tool_input: llm.ToolInput) -> dict[str, bool]:
+            assert tool_input.tool_name == "HassTestTool"
+            return {"success": True}
+
+    async def fake_get_api(*args: object, **kwargs: object) -> FakeApiInstance:
+        return FakeApiInstance()
+
+    monkeypatch.setattr(llm, "async_get_api", fake_get_api)
+
+    call_count = 0
+
+    async def fake_stream_turn(self: CodexClient, **kwargs: object):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            yield CodexTextDelta("I found the background information.")
+            yield CodexCitationDelta(
+                CodexCitation(
+                    title="Background source",
+                    url="https://example.com/background",
+                    start_index=0,
+                    end_index=4,
+                )
+            )
+            yield CodexToolCallDelta(
+                CodexToolCall(
+                    id="call-1",
+                    name="HassTestTool",
+                    arguments={},
+                )
+            )
+            return
+        yield CodexTextDelta("The harmless tool completed successfully.")
+        yield CodexCitationDelta(
+            CodexCitation(
+                title="Final source",
+                url="https://example.com/final",
+                start_index=0,
+                end_index=4,
+            )
+        )
+
+    monkeypatch.setattr(CodexClient, "stream_turn", fake_stream_turn)
+
+    result = await conversation.async_converse(
+        hass,
+        "Research this and use the harmless tool.",
+        None,
+        Context(),
+        agent_id="conversation.codex_assist",
+    )
+
+    assert call_count == 2
+    assert result.response.speech["plain"]["speech"] == (
+        "The harmless tool completed successfully."
+    )
+    assert result.response.card["simple"] == {
+        "title": "Sources",
+        "content": (
+            "- Background source — <https://example.com/background>\n"
+            "- Final source — <https://example.com/final>"
+        ),
+    }
+
+
 async def test_diagnostics_redact_tokens_on_real_entry(hass: HomeAssistant) -> None:
     entry = await _setup_entry(hass)
 
@@ -103,3 +237,57 @@ async def test_diagnostics_redact_tokens_on_real_entry(hass: HomeAssistant) -> N
     assert entry_data["refresh_token"] == REDACTED
     assert entry_data["model"] == "gpt-5.4"
     assert "test-access-token" not in str(diagnostics)
+
+
+async def test_options_flow_uses_real_home_assistant_contract(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = await _setup_entry(hass)
+
+    async def fake_model_ids(**kwargs: object) -> list[str]:
+        return ["gpt-5.4"]
+
+    monkeypatch.setattr(
+        "custom_components.codex_assist.config_flow.fetch_codex_model_ids",
+        fake_model_ids,
+    )
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "init"
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={
+            "model": "gpt-5.4",
+            "prompt": "Keep it short.",
+            "reasoning_effort": "low",
+            "reasoning_summary": "auto",
+            "text_verbosity": "low",
+            "web_search": True,
+            "image_model": "gpt-image-2-medium",
+            "image_size": "1024x1024",
+        },
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"]["text_verbosity"] == "low"
+    assert result["data"]["web_search"] is True
+    assert entry.options["prompt"] == "Keep it short."
+
+
+def test_structured_output_uses_real_home_assistant_schema_converter() -> None:
+    task = SimpleNamespace(
+        name="Porch state",
+        structure=vol.Schema({vol.Required("state"): vol.In(["on", "off"])}),
+    )
+    chat_log = SimpleNamespace(llm_api=None)
+
+    text_format = _structured_output_format(task, chat_log)
+
+    assert text_format is not None
+    assert text_format["type"] == "json_schema"
+    assert text_format["name"] == "porch_state"
+    assert text_format["schema"]["required"] == ["state"]
+    assert text_format["schema"]["properties"]["state"]["enum"] == ["on", "off"]

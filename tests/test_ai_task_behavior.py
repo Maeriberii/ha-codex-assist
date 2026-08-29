@@ -34,9 +34,9 @@ def test_structured_data_from_text_returns_plain_text_without_structure(ai_task_
 
 
 def test_structured_data_from_text_parses_json_when_structure_requested(ai_task_module):
-    assert ai_task_module._structured_data_from_text('{"state":"on"}', {"type": "object"}) == {
-        "state": "on"
-    }
+    structure = ai_task_module.vol.Schema({"state": str})
+
+    assert ai_task_module._structured_data_from_text('{"state":"on"}', structure) == {"state": "on"}
 
 
 def test_structured_data_from_text_rejects_invalid_json_when_structure_requested(
@@ -44,9 +44,66 @@ def test_structured_data_from_text_rejects_invalid_json_when_structure_requested
     caplog,
 ):
     with pytest.raises(RuntimeError, match="invalid JSON"):
-        ai_task_module._structured_data_from_text("not json", {"type": "object"})
+        ai_task_module._structured_data_from_text(
+            "not json", ai_task_module.vol.Schema({"state": str})
+        )
     assert "not json" not in caplog.text
     assert "Failed to parse Codex Assist AI Task JSON response (8 chars)" in caplog.text
+
+
+def test_structured_data_from_text_validates_requested_structure(ai_task_module):
+    class RejectingStructure:
+        def __call__(self, value):
+            raise ai_task_module.vol.Invalid("state is required")
+
+    with pytest.raises(RuntimeError, match="did not match the requested structure"):
+        ai_task_module._structured_data_from_text('{"wrong":"shape"}', RejectingStructure())
+
+
+def test_structured_output_format_converts_ai_task_schema(ai_task_module):
+    task = type(
+        "Task",
+        (),
+        {
+            "name": "Porch State",
+            "structure": ai_task_module.vol.Schema({"state": str}),
+        },
+    )()
+    chat_log = type(
+        "ChatLog",
+        (),
+        {"llm_api": type("LLMApi", (), {"custom_serializer": None})()},
+    )()
+
+    assert ai_task_module._structured_output_format(task, chat_log) == {
+        "type": "json_schema",
+        "name": "porch_state",
+        "schema": {"state": str},
+    }
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("x" * 65, "x" * 64),
+        ("!!!", "structured_output"),
+    ],
+)
+def test_structured_output_format_normalizes_api_name(ai_task_module, name, expected):
+    task = type(
+        "Task",
+        (),
+        {"name": name, "structure": ai_task_module.vol.Schema({"state": str})},
+    )()
+    chat_log = type("ChatLog", (), {"llm_api": None})()
+
+    assert ai_task_module._structured_output_format(task, chat_log)["name"] == expected
+
+
+def test_ai_task_web_search_is_disabled_for_structured_output(ai_task_module):
+    assert ai_task_module._web_search_enabled(True, text_format=None) is True
+    assert ai_task_module._web_search_enabled(True, text_format={"type": "json_schema"}) is False
+    assert ai_task_module._web_search_enabled(False, text_format=None) is False
 
 
 @pytest.mark.asyncio
@@ -75,7 +132,16 @@ async def test_ai_task_generate_data_reports_temporary_auth_without_reauth(
     )()
     task = type("Task", (), {"structure": None})()
     chat_log = type("ChatLog", (), {})()
-    monkeypatch.setattr(ai_task_module, "resolve_runtime_tokens", fail_temporarily)
+
+    class FailingCoordinator:
+        async def resolve(self, *args, **kwargs):
+            return await fail_temporarily()
+
+    monkeypatch.setattr(
+        ai_task_module,
+        "runtime_token_coordinator",
+        lambda entry: FailingCoordinator(),
+    )
 
     with pytest.raises(RuntimeError, match="rate limited"):
         await entity._async_generate_data(task, chat_log)
@@ -120,7 +186,11 @@ async def test_ai_task_chat_log_retry_propagates_reauth_required(
                     )(),
                 },
             )(),
-            entry=type("Entry", (), {"data": {}})(),
+            entry=type(
+                "Entry",
+                (),
+                {"data": {"access_token": "access-1", "refresh_token": "refresh-1"}},
+            )(),
             auth_client=ReauthAuthClient(),
             tokens=CodexTokenSet("access-1", "refresh-1"),
             codex=object(),
@@ -175,7 +245,11 @@ async def test_ai_task_chat_log_retry_reauths_when_refreshed_token_is_rejected(
                     )(),
                 },
             )(),
-            entry=type("Entry", (), {"data": {}})(),
+            entry=type(
+                "Entry",
+                (),
+                {"data": {"access_token": "access-1", "refresh_token": "refresh-1"}},
+            )(),
             auth_client=RefreshAuthClient(),
             tokens=CodexTokenSet("access-1", "refresh-1"),
             codex=object(),
@@ -226,7 +300,11 @@ async def test_ai_task_image_retry_reauths_when_refreshed_token_is_rejected(
                     )(),
                 },
             )(),
-            entry=type("Entry", (), {"data": {}})(),
+            entry=type(
+                "Entry",
+                (),
+                {"data": {"access_token": "access-1", "refresh_token": "refresh-1"}},
+            )(),
             auth_client=RefreshAuthClient(),
             tokens=CodexTokenSet("access-1", "refresh-1"),
             codex=RejectingImageCodex(),

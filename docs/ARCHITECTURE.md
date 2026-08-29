@@ -10,7 +10,9 @@ Codex Assist is a Home Assistant custom integration that registers a native Assi
 - **Model discovery**: offers a curated fallback model list and, when authenticated, asks the Codex backend for the currently available model IDs.
 - **Conversation agent**: registers `conversation.codex_assist` so Codex Assist can be selected in Home Assistant Assist pipelines.
 - **AI Task entity**: registers a native AI Task provider for structured data generation, attachment-aware prompts, and image generation.
-- **Codex client**: refreshes tokens when possible and sends conversation turns to the Codex-compatible service interface.
+- **Runtime token coordinator**: serializes refresh-token rotation per config entry so concurrent Conversation and AI Task requests reuse the winning refresh instead of invalidating one another.
+- **Codex client**: sends conversation turns to the Codex-compatible service interface and normalizes its response stream.
+- **Hosted web search**: when explicitly enabled, adds the backend `web_search` tool and converts structured URL annotations into a validated source footer/card. Unsupported or unsafe citation URLs are discarded.
 - **Assist tool bridge**: maps model-requested actions into Home Assistant's Assist LLM API rather than calling services directly.
 
 ## Request flow
@@ -20,12 +22,13 @@ Codex Assist is a Home Assistant custom integration that registers a native Assi
 3. Codex Assist sends the conversation to the Codex-compatible service interface.
 4. If Codex requests a Home Assistant tool call, Codex Assist maps that request into Home Assistant's Assist LLM API.
 5. Home Assistant validates and executes the allowed Assist tool call using its normal exposed-entity controls.
-6. Codex Assist returns the final response to Home Assistant.
+6. When hosted search is enabled, Codex Assist preserves validated citations for displayed output and removes only its generated source footer from speech.
+7. Codex Assist returns the final response to Home Assistant.
 
 ## AI Task flow
 
 1. Home Assistant sends an AI Task request to the Codex Assist AI Task entity.
-2. For data-generation tasks, Codex Assist translates instructions and supported attachments into Codex-compatible input items.
+2. For data-generation tasks, Codex Assist translates instructions and supported attachments into Codex-compatible input items. When Home Assistant supplies a structure, Codex Assist sends it as a native JSON-schema response format, validates the returned data against the same structure, and disables web search so citation text cannot invalidate the JSON result.
 3. For image-generation tasks, Codex Assist requests an image from the Codex-compatible service interface using curated quality and size options.
 4. Codex Assist returns the structured data or generated image bytes through Home Assistant's native AI Task result types.
 

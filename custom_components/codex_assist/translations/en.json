@@ -11,7 +11,8 @@
           "prompt": "System prompt",
           "reasoning_effort": "Reasoning effort",
           "reasoning_summary": "Reasoning summary",
-          "text_verbosity": "Text verbosity"
+          "text_verbosity": "Text verbosity",
+          "web_search": "Enable hosted web search"
         }
       },
       "device": {
@@ -32,7 +33,8 @@
           "prompt": "System prompt",
           "reasoning_effort": "Reasoning effort",
           "reasoning_summary": "Reasoning summary",
-          "text_verbosity": "Text verbosity"
+          "text_verbosity": "Text verbosity",
+          "web_search": "Enable hosted web search"
         }
       }
     },
@@ -59,7 +61,8 @@
           "prompt": "System prompt",
           "reasoning_effort": "Reasoning effort",
           "reasoning_summary": "Reasoning summary",
-          "text_verbosity": "Text verbosity"
+          "text_verbosity": "Text verbosity",
+          "web_search": "Enable hosted web search"
         }
       }
     }

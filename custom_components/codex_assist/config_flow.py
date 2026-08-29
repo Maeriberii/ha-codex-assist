@@ -31,11 +31,13 @@ CONF_IMAGE_SIZE = "image_size"
 CONF_REASONING_EFFORT = "reasoning_effort"
 CONF_REASONING_SUMMARY = "reasoning_summary"
 CONF_TEXT_VERBOSITY = "text_verbosity"
+CONF_WEB_SEARCH = "web_search"
 DEFAULT_MODEL = "gpt-5.4"
 DEFAULT_PROMPT = "You are a concise Home Assistant Assist conversation agent."
 DEFAULT_REASONING_EFFORT = "low"
 DEFAULT_REASONING_SUMMARY = "auto"
 DEFAULT_TEXT_VERBOSITY = "medium"
+DEFAULT_WEB_SEARCH = False
 
 
 class CodexAssistConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -141,6 +143,7 @@ class CodexAssistConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_REASONING_EFFORT,
                 CONF_REASONING_SUMMARY,
                 CONF_TEXT_VERBOSITY,
+                CONF_WEB_SEARCH,
             )
             if key in entry_data
         }
@@ -245,6 +248,10 @@ def _settings_schema(
                     mode=selector.SelectSelectorMode.DROPDOWN,
                 )
             ),
+            vol.Optional(
+                CONF_WEB_SEARCH,
+                default=defaults.get(CONF_WEB_SEARCH, DEFAULT_WEB_SEARCH),
+            ): bool,
             vol.Optional(
                 CONF_IMAGE_MODEL,
                 default=image_model_default,

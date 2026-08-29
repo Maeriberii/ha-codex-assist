@@ -21,12 +21,17 @@ class FakeConfigEntries:
 
     def async_update_entry(self, entry, *, data):
         self.updates.append((entry, data))
+        entry.data = data
 
 
 class FakeEntry:
     def __init__(self):
         self.entry_id = "entry-1"
-        self.data = {"model": "gpt-5.4", "access_token": "access-1"}
+        self.data = {
+            "model": "gpt-5.4",
+            "access_token": "access-1",
+            "refresh_token": "refresh-1",
+        }
         self.reauth_started = False
 
     def async_start_reauth(self, hass):
@@ -127,7 +132,16 @@ async def test_handle_message_reports_temporary_auth_failure_without_reauth(
     entity = conversation_module.CodexAssistConversationEntity(entry)
     entity.hass = hass
     chat_log = FakeHandleMessageChatLog()
-    monkeypatch.setattr(conversation_module, "resolve_runtime_tokens", fail_temporarily)
+
+    class FailingCoordinator:
+        async def resolve(self, *args, **kwargs):
+            return await fail_temporarily()
+
+    monkeypatch.setattr(
+        conversation_module,
+        "runtime_token_coordinator",
+        lambda entry: FailingCoordinator(),
+    )
 
     result = await entity._async_handle_message(FakeUserInput(), chat_log)
 
@@ -159,7 +173,16 @@ async def test_handle_message_reports_friendly_usage_limit_without_status_code(
     entity.hass = hass
     entity.entity_id = "conversation.codex_assist"
     chat_log = FakeHandleMessageChatLog()
-    monkeypatch.setattr(conversation_module, "resolve_runtime_tokens", resolve_tokens)
+
+    class ResolvedCoordinator:
+        async def resolve(self, *args, **kwargs):
+            return await resolve_tokens()
+
+    monkeypatch.setattr(
+        conversation_module,
+        "runtime_token_coordinator",
+        lambda entry: ResolvedCoordinator(),
+    )
     monkeypatch.setattr(
         conversation_module,
         "_stream_codex_turn_into_chat_log",

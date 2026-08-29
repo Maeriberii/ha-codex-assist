@@ -5,9 +5,12 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
 import pytest
 
 from custom_components.codex_assist.codex_client import (
+    CodexCitation,
+    CodexCitationDelta,
     CodexTextDelta,
     CodexToolCall,
     CodexToolCallDelta,
@@ -74,6 +77,15 @@ def conversation_module(monkeypatch):
     install_homeassistant_fakes(monkeypatch)
     module = importlib.import_module("custom_components.codex_assist.conversation")
     return importlib.reload(module)
+
+
+def test_request_failure_text_names_blank_transport_error(conversation_module):
+    assert conversation_module._request_failure_text(httpx.ReadTimeout("")) == (
+        "Codex Assist failed: ReadTimeout"
+    )
+    assert conversation_module._request_failure_text(RuntimeError("backend failed")) == (
+        "Codex Assist failed: backend failed"
+    )
 
 
 @pytest.mark.asyncio
@@ -181,6 +193,110 @@ def test_codex_tools_from_chat_log_converts_ha_llm_api_tools(conversation_module
             "strict": False,
         }
     ]
+    assert conversation_module._codex_tools_from_chat_log(
+        FakeChatLog(llm_api=llm_api), enable_web_search=True
+    ) == [*result, {"type": "web_search"}]
+
+
+def test_codex_tools_adds_opt_in_web_search_without_ha_tools(conversation_module):
+    assert (
+        conversation_module._codex_tools_from_chat_log(FakeChatLog(), enable_web_search=False) == []
+    )
+    assert conversation_module._codex_tools_from_chat_log(
+        FakeChatLog(), enable_web_search=True
+    ) == [{"type": "web_search"}]
+
+
+@pytest.mark.asyncio
+async def test_codex_stream_captures_citations_without_streaming_urls(conversation_module):
+    async def stream():
+        yield CodexTextDelta("IANA maintains the reserved domains.")
+        citation = CodexCitation(
+            title="IANA [Reserved] Domains",
+            url="https://www.iana.org/help/example-domains",
+            start_index=0,
+            end_index=4,
+        )
+        yield CodexCitationDelta(citation)
+        yield CodexCitationDelta(citation)
+        yield CodexCitationDelta(
+            CodexCitation(
+                title="Unsafe",
+                url="javascript:alert(1)",
+                start_index=0,
+                end_index=4,
+            )
+        )
+
+    captured = []
+    deltas = [
+        delta
+        async for delta in conversation_module._codex_stream_to_assistant_deltas(
+            stream(),
+            citation_sink=captured,
+        )
+    ]
+
+    assert deltas == [
+        {"role": "assistant"},
+        {"content": "IANA maintains the reserved domains."},
+    ]
+    assert captured == [
+        CodexCitation(
+            title="IANA \\[Reserved\\] Domains",
+            url="https://www.iana.org/help/example-domains",
+            start_index=0,
+            end_index=4,
+        )
+    ]
+
+
+def test_citation_result_keeps_sources_in_card_without_changing_speech(conversation_module):
+    class Response:
+        def __init__(self):
+            self.speech = {"plain": {"speech": "IANA maintains the reserved domains."}}
+            self.card = {}
+
+        def async_set_card(self, title, content):
+            self.card["simple"] = {"title": title, "content": content}
+
+    result = type("Result", (), {"response": Response()})()
+    citations = [
+        CodexCitation(
+            title="IANA",
+            url="https://www.iana.org/help/example-domains",
+            start_index=0,
+            end_index=4,
+        )
+    ]
+
+    conversation_module._attach_citations_card(result, citations)
+
+    assert result.response.speech["plain"]["speech"] == (
+        "IANA maintains the reserved domains."
+    )
+    assert result.response.card["simple"] == {
+        "title": "Sources",
+        "content": "- IANA — <https://www.iana.org/help/example-domains>",
+    }
+
+
+def test_web_search_instructions_suppress_spoken_source_urls(conversation_module):
+    chat_log = FakeChatLog([FakeContent(role="system", content="Be concise.")])
+
+    assert (
+        conversation_module._instructions_for_turn(
+            chat_log, "fallback", web_search=False
+        )
+        == "Be concise."
+    )
+    instructions = conversation_module._instructions_for_turn(
+        chat_log, "fallback", web_search=True
+    )
+
+    assert instructions.startswith("Be concise.\n\n")
+    assert "do not include raw URLs" in instructions
+    assert "renders structured citations separately" in instructions
 
 
 @pytest.mark.asyncio
@@ -215,6 +331,7 @@ async def test_stream_codex_turn_into_chat_log_calls_chat_log_stream_api(
             "reasoning_effort": "low",
             "reasoning_summary": "auto",
             "text_verbosity": "medium",
+            "text_format": None,
         }
     ]
 
@@ -244,6 +361,76 @@ async def test_codex_input_from_chat_log_translates_image_attachments(
     assert content[1]["type"] == "input_image"
     assert content[1]["image_url"].startswith("data:image/png;base64,")
     assert hass.executor_jobs[0][0] is conversation_module._image_attachments_for_codex
+
+
+def test_image_attachments_rejects_too_many_images(
+    conversation_module,
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setattr(conversation_module, "MAX_IMAGE_ATTACHMENTS", 2)
+    attachments = []
+    for index in range(3):
+        path = tmp_path / f"image-{index}.png"
+        path.write_bytes(b"image")
+        attachments.append(type("Attachment", (), {"mime_type": "image/png", "path": path})())
+
+    with pytest.raises(ValueError, match="at most 2 image attachments"):
+        conversation_module._image_attachments_for_codex(attachments)
+
+
+def test_image_attachments_rejects_aggregate_byte_limit(
+    conversation_module,
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setattr(conversation_module, "MAX_TOTAL_IMAGE_ATTACHMENT_BYTES", 5)
+    attachments = []
+    for index in range(2):
+        path = tmp_path / f"image-{index}.png"
+        path.write_bytes(b"abc")
+        attachments.append(type("Attachment", (), {"mime_type": "image/png", "path": path})())
+
+    with pytest.raises(ValueError, match="total attachment size"):
+        conversation_module._image_attachments_for_codex(attachments)
+
+
+def test_image_attachment_growth_is_read_with_a_hard_bound(
+    conversation_module,
+    monkeypatch,
+):
+    import io
+
+    monkeypatch.setattr(conversation_module, "MAX_IMAGE_ATTACHMENT_BYTES", 5)
+    monkeypatch.setattr(conversation_module, "MAX_TOTAL_IMAGE_ATTACHMENT_BYTES", 5)
+
+    class BoundedReader(io.BytesIO):
+        requested_size: int | None = None
+
+        def read(self, size: int | None = -1):
+            self.requested_size = size
+            return super().read(size)
+
+    reader = BoundedReader(b"unexpectedly large")
+
+    class GrowingPath:
+        def stat(self):
+            return type("Stat", (), {"st_size": 1})()
+
+        def open(self, mode):
+            assert mode == "rb"
+            return reader
+
+    attachment = type(
+        "Attachment",
+        (),
+        {"mime_type": "image/png", "path": GrowingPath()},
+    )()
+
+    with pytest.raises(ValueError, match="per-file size limit"):
+        conversation_module._image_attachments_for_codex([attachment])
+
+    assert reader.requested_size == 6
 
 
 def test_trim_codex_input_items_drops_orphaned_tool_outputs(conversation_module):

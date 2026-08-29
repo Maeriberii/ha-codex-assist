@@ -147,6 +147,9 @@ def install_homeassistant_fakes(monkeypatch):
         def __call__(self, value):
             return value
 
+    class Invalid(Exception):
+        pass
+
     class Optional:
         def __init__(self, key, default=None):
             self.key = key
@@ -203,7 +206,11 @@ def install_homeassistant_fakes(monkeypatch):
     selector.SelectSelectorConfig = SelectSelectorConfig
     selector.SelectSelectorMode = SelectSelectorMode
     util_json.json_loads = __import__("json").loads
-    voluptuous_openapi.convert = lambda schema, custom_serializer=None: schema
+    util.slugify = lambda value: value.lower().replace(" ", "_")
+    voluptuous_openapi.convert = lambda schema, custom_serializer=None: getattr(
+        schema, "schema", schema
+    )
+    vol.Invalid = Invalid
     vol.Schema = Schema
     vol.Optional = Optional
 
