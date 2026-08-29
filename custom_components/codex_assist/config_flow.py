@@ -5,8 +5,9 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.const import CONF_LLM_HASS_API
 from homeassistant.data_entry_flow import section
-from homeassistant.helpers import selector
+from homeassistant.helpers import llm, selector
 from homeassistant.helpers.httpx_client import get_async_client
 
 from . import DOMAIN
@@ -198,7 +199,11 @@ class CodexAssistOptionsFlow(config_entries.OptionsFlow):
         )
         return self.async_show_form(
             step_id="init",
-            data_schema=_settings_schema(defaults, model_options=model_options),
+            data_schema=_settings_schema(
+                defaults,
+                model_options=model_options,
+                llm_apis=llm.async_get_apis(self.hass),
+            ),
         )
 
 
@@ -206,6 +211,7 @@ def _settings_schema(
     defaults: dict[str, Any],
     *,
     model_options: list[str],
+    llm_apis: list[llm.API] | None = None,
 ) -> vol.Schema:
     model_options = list(dict.fromkeys([*model_options, DEFAULT_MODEL]))
     model_default = defaults.get(CONF_MODEL, DEFAULT_MODEL)
@@ -217,6 +223,33 @@ def _settings_schema(
     image_size_default = defaults.get(CONF_IMAGE_SIZE, DEFAULT_IMAGE_SIZE)
     if image_size_default not in IMAGE_SIZE_OPTIONS:
         image_size_default = DEFAULT_IMAGE_SIZE
+
+    advanced_settings: dict[Any, Any] = {
+        vol.Optional(
+            CONF_PROMPT,
+            default=defaults.get(CONF_PROMPT, DEFAULT_PROMPT),
+        ): str,
+        vol.Optional(
+            CONF_REASONING_EFFORT,
+            default=defaults.get(CONF_REASONING_EFFORT, DEFAULT_REASONING_EFFORT),
+        ): _low_medium_high_selector(),
+    }
+    if llm_apis is not None:
+        advanced_settings[
+            vol.Optional(
+                CONF_LLM_HASS_API,
+                default=_llm_api_default(defaults),
+            )
+        ] = selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=[
+                    selector.SelectOptionDict(value=api.id, label=api.name)
+                    for api in llm_apis
+                ],
+                mode=selector.SelectSelectorMode.DROPDOWN,
+                multiple=True,
+            )
+        )
 
     return vol.Schema(
         {
@@ -241,20 +274,7 @@ def _settings_schema(
                 {"collapsed": False},
             ),
             vol.Required(SECTION_ADVANCED_SETTINGS): section(
-                vol.Schema(
-                    {
-                        vol.Optional(
-                            CONF_PROMPT,
-                            default=defaults.get(CONF_PROMPT, DEFAULT_PROMPT),
-                        ): str,
-                        vol.Optional(
-                            CONF_REASONING_EFFORT,
-                            default=defaults.get(
-                                CONF_REASONING_EFFORT, DEFAULT_REASONING_EFFORT
-                            ),
-                        ): _low_medium_high_selector(),
-                    }
-                ),
+                vol.Schema(advanced_settings),
                 {"collapsed": True},
             ),
             vol.Required(SECTION_IMAGE_SETTINGS): section(
@@ -274,6 +294,12 @@ def _settings_schema(
             ),
         }
     )
+
+
+def _llm_api_default(defaults: dict[str, Any]) -> str | list[str]:
+    """Return selected HA LLM APIs, preserving legacy single selections."""
+    selected = defaults.get(CONF_LLM_HASS_API, [llm.LLM_API_ASSIST])
+    return [selected] if isinstance(selected, str) else selected
 
 
 def _model_schema(

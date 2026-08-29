@@ -27,6 +27,8 @@ def install_homeassistant_fakes(monkeypatch):
     util_json = types.ModuleType("homeassistant.util.json")
     voluptuous_openapi = types.ModuleType("voluptuous_openapi")
     vol = types.ModuleType("voluptuous")
+    ha_admin_tools = types.ModuleType("custom_components.ha_admin_tools")
+    authorization = types.ModuleType("custom_components.ha_admin_tools.authorization")
 
     class ConfigFlow:
         def __init_subclass__(cls, **kwargs):
@@ -136,6 +138,7 @@ def install_homeassistant_fakes(monkeypatch):
     class SelectSelectorConfig:
         options: list
         mode: str
+        multiple: bool = False
 
     @dataclass
     class SelectSelector:
@@ -165,7 +168,7 @@ def install_homeassistant_fakes(monkeypatch):
             self.default = default
 
         def __hash__(self):
-            return hash((self.key, self.default))
+            return hash((self.key, repr(self.default)))
 
         def __eq__(self, other):
             return (
@@ -206,6 +209,7 @@ def install_homeassistant_fakes(monkeypatch):
     )
     ai_task.GenDataTaskResult = object
     ai_task.GenImageTaskResult = object
+    const.CONF_LLM_HASS_API = "llm_hass_api"
     const.MATCH_ALL = "*"
     core.HomeAssistant = HomeAssistant
     exceptions.HomeAssistantError = RuntimeError
@@ -213,7 +217,10 @@ def install_homeassistant_fakes(monkeypatch):
     httpx_client.get_async_client = lambda hass: getattr(hass, "http_client", None)
     intent.IntentResponse = IntentResponse
     llm.LLM_API_ASSIST = "assist"
+    llm.async_get_apis = lambda hass: []
     llm.ToolInput = ToolInput
+    authorization.async_set_turn_text = lambda hass, context, text: lambda: None
+    ha_admin_tools.authorization = authorization
     selector.SelectOptionDict = SelectOptionDict
     selector.SelectSelector = SelectSelector
     selector.SelectSelectorConfig = SelectSelectorConfig
@@ -260,6 +267,8 @@ def install_homeassistant_fakes(monkeypatch):
         "homeassistant.util.json": util_json,
         "voluptuous": vol,
         "voluptuous_openapi": voluptuous_openapi,
+        "custom_components.ha_admin_tools": ha_admin_tools,
+        "custom_components.ha_admin_tools.authorization": authorization,
     }
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)

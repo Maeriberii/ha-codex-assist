@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -10,7 +11,7 @@ import httpx
 from homeassistant.components import conversation
 from homeassistant.components.conversation import AssistantContentDeltaDict
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import MATCH_ALL
+from homeassistant.const import CONF_LLM_HASS_API, MATCH_ALL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import intent, llm
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -31,6 +32,7 @@ from .codex_client import (
     CodexRateLimitError,
     CodexStreamDelta,
     CodexTextDelta,
+    CodexToolCall,
     CodexToolCallDelta,
     codex_user_content_with_images,
 )
@@ -94,6 +96,33 @@ class CodexAssistConversationEntity(
         user_input: conversation.ConversationInput,
         chat_log: conversation.ChatLog,
     ) -> conversation.ConversationResult:
+        """Bind the real incoming turn to disruptive tools for this request only."""
+        try:
+            from custom_components.ha_admin_tools.authorization import async_set_turn_text
+        except ModuleNotFoundError as err:
+            if err.name not in {
+                "custom_components.ha_admin_tools",
+                "custom_components.ha_admin_tools.authorization",
+            }:
+                raise
+            # The downstream security integration is optional for ordinary
+            # Codex Assist installs. Without it, no ha_admin_tools capability
+            # exists to authorize.
+            return await self._async_handle_message_with_turn(user_input, chat_log)
+
+        clear_turn_text = async_set_turn_text(
+            self.hass, user_input.context, user_input.text
+        )
+        try:
+            return await self._async_handle_message_with_turn(user_input, chat_log)
+        finally:
+            clear_turn_text()
+
+    async def _async_handle_message_with_turn(
+        self,
+        user_input: conversation.ConversationInput,
+        chat_log: conversation.ChatLog,
+    ) -> conversation.ConversationResult:
         settings = {**self.entry.data, **self.entry.options}
         model = settings.get("model", "gpt-5.4")
         prompt = settings.get(
@@ -104,13 +133,14 @@ class CodexAssistConversationEntity(
         reasoning_summary = settings.get("reasoning_summary", DEFAULT_REASONING_SUMMARY)
         text_verbosity = settings.get("text_verbosity", DEFAULT_TEXT_VERBOSITY)
         web_search = bool(settings.get(CONF_WEB_SEARCH, DEFAULT_WEB_SEARCH))
+        llm_hass_api = settings.get(CONF_LLM_HASS_API, [llm.LLM_API_ASSIST])
         citations: list[CodexCitation] = []
 
         response = intent.IntentResponse(language=user_input.language)
         try:
             await chat_log.async_provide_llm_data(
                 user_input.as_llm_context(DOMAIN),
-                llm.LLM_API_ASSIST,
+                llm_hass_api,
                 prompt,
                 user_input.extra_system_prompt,
             )
@@ -142,83 +172,91 @@ class CodexAssistConversationEntity(
             return conversation.async_get_result_from_chat_log(user_input, chat_log)
 
         codex = CodexClient(http_client=http_client, access_token=tokens.access_token)
-        try:
-            for _iteration in range(MAX_TOOL_ITERATIONS):
+        async def stream_turn_with_auth_retry(
+            *,
+            tools: list[dict[str, Any]],
+            allow_tools: bool,
+            on_text_delta: Callable[[str], None] | None = None,
+        ) -> bool | None:
+            """Stream one model turn, refreshing a rejected access token once."""
+            nonlocal codex, tokens
+
+            async def stream_with(client: CodexClient) -> bool:
+                return await _stream_codex_turn_into_chat_log(
+                    chat_log=chat_log,
+                    codex=client,
+                    entity_id=self.entity_id or "",
+                    model=model,
+                    instructions=_instructions_for_turn(
+                        chat_log, prompt, web_search=web_search
+                    ),
+                    input_items=await _codex_input_from_chat_log(self.hass, chat_log),
+                    tools=tools,
+                    reasoning_effort=reasoning_effort,
+                    reasoning_summary=reasoning_summary,
+                    text_verbosity=text_verbosity,
+                    allow_tools=allow_tools,
+                    citation_sink=citations,
+                    on_text_delta=on_text_delta,
+                )
+
+            try:
+                return await stream_with(codex)
+            except CodexAuthenticationError as err:
+                LOGGER.warning(
+                    "Codex Assist access token was rejected; refreshing and retrying once: %s",
+                    err,
+                )
                 try:
-                    tool_call_requested = await _stream_codex_turn_into_chat_log(
-                        chat_log=chat_log,
-                        codex=codex,
-                        entity_id=self.entity_id or "",
-                        model=model,
-                        instructions=_instructions_for_turn(
-                            chat_log, prompt, web_search=web_search
-                        ),
-                        input_items=await _codex_input_from_chat_log(self.hass, chat_log),
-                        tools=_codex_tools_from_chat_log(chat_log, enable_web_search=web_search),
-                        reasoning_effort=reasoning_effort,
-                        reasoning_summary=reasoning_summary,
-                        text_verbosity=text_verbosity,
-                        citation_sink=citations,
+                    tokens = await _refresh_runtime_tokens(
+                        self.hass, self.entry, auth_client, tokens
                     )
-                except CodexAuthenticationError as err:
+                except CodexReauthRequiredError as refresh_err:
                     LOGGER.warning(
-                        "Codex Assist access token was rejected; refreshing and retrying once: %s",
-                        err,
+                        "Codex Assist token refresh failed; starting reauth flow: %s",
+                        refresh_err,
                     )
-                    try:
-                        tokens = await _refresh_runtime_tokens(
-                            self.hass,
-                            self.entry,
-                            auth_client,
-                            tokens,
-                        )
-                    except CodexReauthRequiredError as refresh_err:
-                        LOGGER.warning(
-                            "Codex Assist token refresh failed; starting reauth flow: %s",
-                            refresh_err,
-                        )
-                        return _start_reauth_result(
-                            self.hass,
-                            self.entry,
-                            response,
-                            user_input,
-                        )
-                    codex = CodexClient(
-                        http_client=http_client,
-                        access_token=tokens.access_token,
+                    return None
+                codex = CodexClient(http_client=http_client, access_token=tokens.access_token)
+                try:
+                    return await stream_with(codex)
+                except CodexAuthenticationError as retry_err:
+                    LOGGER.warning(
+                        "Codex Assist token was rejected after refresh; starting reauth flow: %s",
+                        retry_err,
                     )
-                    try:
-                        tool_call_requested = await _stream_codex_turn_into_chat_log(
-                            chat_log=chat_log,
-                            codex=codex,
-                            entity_id=self.entity_id or "",
-                            model=model,
-                            instructions=_instructions_for_turn(
-                                chat_log, prompt, web_search=web_search
-                            ),
-                            input_items=await _codex_input_from_chat_log(self.hass, chat_log),
-                            tools=_codex_tools_from_chat_log(
-                                chat_log, enable_web_search=web_search
-                            ),
-                            reasoning_effort=reasoning_effort,
-                            reasoning_summary=reasoning_summary,
-                            text_verbosity=text_verbosity,
-                            citation_sink=citations,
-                        )
-                    except CodexAuthenticationError as retry_err:
-                        LOGGER.warning(
-                            "Codex Assist token was rejected after refresh; "
-                            "starting reauth flow: %s",
-                            retry_err,
-                        )
-                        return _start_reauth_result(
-                            self.hass,
-                            self.entry,
-                            response,
-                            user_input,
-                        )
-                if not tool_call_requested:
-                    break
+                    return None
+
+        reauth_required = False
+
+        async def run_tool_iteration(iteration: int, force_final: bool) -> bool:
+            del iteration
+            nonlocal reauth_required
+            if force_final:
+                tool_call_requested = await _async_retry_forced_synthesis(
+                    lambda on_text_delta: stream_turn_with_auth_retry(
+                        tools=[], allow_tools=False, on_text_delta=on_text_delta
+                    )
+                )
+            else:
+                tool_call_requested = await stream_turn_with_auth_retry(
+                    tools=_codex_tools_from_chat_log(
+                        chat_log, enable_web_search=web_search
+                    ),
+                    allow_tools=True,
+                )
+            if tool_call_requested is None:
+                reauth_required = True
+                return False
+            return tool_call_requested
+
+        try:
+            await _async_run_tool_iterations(
+                max_tool_iterations=MAX_TOOL_ITERATIONS,
+                run_iteration=run_tool_iteration,
+            )
+            if reauth_required:
+                return _start_reauth_result(self.hass, self.entry, response, user_input)
         except CodexRateLimitError as err:
             LOGGER.warning("Codex Assist hit usage or rate limit: %s", err)
             chat_log.async_add_assistant_content_without_tools(
@@ -260,6 +298,40 @@ def _request_failure_text(err: BaseException) -> str:
     return request_failure_text("Codex Assist failed", err)
 
 
+async def _async_run_tool_iterations(
+    *,
+    max_tool_iterations: int,
+    run_iteration: Callable[[int, bool], Awaitable[bool]],
+) -> None:
+    """Run tool-capable rounds, then synthesize once if all requested tools."""
+    for iteration in range(1, max_tool_iterations + 1):
+        if not await run_iteration(iteration, False):
+            return
+    await run_iteration(max_tool_iterations + 1, True)
+
+
+async def _async_retry_forced_synthesis(
+    run_attempt: Callable[[Callable[[str], None]], Awaitable[bool | None]],
+    *,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> bool | None:
+    """Retry one interrupted no-tools synthesis only before visible text emits."""
+    emitted_text = False
+
+    def mark_text_emitted(_: str) -> None:
+        nonlocal emitted_text
+        emitted_text = True
+
+    for attempt in range(2):
+        try:
+            return await run_attempt(mark_text_emitted)
+        except (httpx.RemoteProtocolError, httpx.ReadError):
+            if emitted_text or attempt == 1:
+                raise
+            await sleep(0.5)
+    raise RuntimeError("Forced synthesis retry loop exited unexpectedly")
+
+
 async def _stream_codex_turn_into_chat_log(
     *,
     chat_log: conversation.ChatLog,
@@ -273,12 +345,18 @@ async def _stream_codex_turn_into_chat_log(
     reasoning_summary: str,
     text_verbosity: str,
     text_format: dict[str, Any] | None = None,
+    allow_tools: bool = True,
     citation_sink: list[CodexCitation] | None = None,
+    on_text_delta: Callable[[str], None] | None = None,
 ) -> bool:
     tool_call_requested = False
 
-    def mark_tool_call_requested() -> None:
+    def mark_tool_call_requested(tool_call: CodexToolCall) -> None:
         nonlocal tool_call_requested
+        if not allow_tools:
+            raise RuntimeError(
+                "Codex Assist final synthesis returned a tool call despite tools being disabled"
+            )
         tool_call_requested = True
 
     async for _delta in chat_log.async_add_delta_content_stream(
@@ -296,6 +374,7 @@ async def _stream_codex_turn_into_chat_log(
             ),
             on_tool_call=mark_tool_call_requested,
             citation_sink=citation_sink,
+            on_text_delta=on_text_delta,
         ),
     ):
         pass
@@ -305,8 +384,9 @@ async def _stream_codex_turn_into_chat_log(
 async def _codex_stream_to_assistant_deltas(
     stream: AsyncIterator[CodexStreamDelta],
     *,
-    on_tool_call: Callable[[], None] | None = None,
+    on_tool_call: Callable[[CodexToolCall], None] | None = None,
     citation_sink: list[CodexCitation] | None = None,
+    on_text_delta: Callable[[str], None] | None = None,
 ) -> AsyncIterator[AssistantContentDeltaDict]:
     started = False
     seen_urls: set[str] = set()
@@ -324,10 +404,12 @@ async def _codex_stream_to_assistant_deltas(
             yield {"role": "assistant"}
             started = True
         if isinstance(delta, CodexTextDelta):
+            if on_text_delta is not None:
+                on_text_delta(delta.text)
             yield {"content": delta.text}
         elif isinstance(delta, CodexToolCallDelta):
             if on_tool_call is not None:
-                on_tool_call()
+                on_tool_call(delta.tool_call)
             yield {
                 "tool_calls": [
                     llm.ToolInput(

@@ -109,6 +109,35 @@ def test_options_schema_groups_everyday_advanced_and_image_controls(monkeypatch)
     assert "safety_mode" not in all_fields
 
 
+def test_options_schema_lists_explicitly_selected_llm_apis(monkeypatch):
+    install_homeassistant_fakes(monkeypatch)
+    module = importlib.reload(
+        importlib.import_module("custom_components.codex_assist.config_flow")
+    )
+    apis = [
+        SimpleNamespace(id="assist", name="Assist"),
+        SimpleNamespace(id="mcp-grafana", name="Grafana MCP"),
+    ]
+
+    schema = module._settings_schema(
+        {"llm_hass_api": "mcp-grafana"},
+        model_options=["gpt-5.4"],
+        llm_apis=apis,
+    )
+    advanced = _section_fields(schema, module.SECTION_ADVANCED_SETTINGS)
+
+    assert advanced["llm_hass_api"].config.multiple is True
+    assert [option.value for option in advanced["llm_hass_api"].config.options] == [
+        "assist",
+        "mcp-grafana",
+    ]
+    advanced_schema = _flat_fields(schema)[module.SECTION_ADVANCED_SETTINGS].schema.schema
+    selected_default = next(
+        key.default for key in advanced_schema if key.key == "llm_hass_api"
+    )
+    assert selected_default == ["mcp-grafana"]
+
+
 def test_section_input_is_flattened_for_existing_runtime_settings(monkeypatch):
     install_homeassistant_fakes(monkeypatch)
     module = importlib.reload(
