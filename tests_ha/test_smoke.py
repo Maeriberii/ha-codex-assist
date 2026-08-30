@@ -22,7 +22,10 @@ from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.codex_assist import DOMAIN
-from custom_components.codex_assist.ai_task import _structured_output_format
+from custom_components.codex_assist.ai_task import (
+    _structured_data_from_text,
+    _structured_output_format,
+)
 from custom_components.codex_assist.codex_client import (
     CodexCitation,
     CodexCitationDelta,
@@ -312,16 +315,96 @@ def test_structured_output_uses_real_home_assistant_schema_converter() -> None:
 def test_structured_output_serializes_text_selector_for_strict_codex_schema() -> None:
     task = SimpleNamespace(
         name="Home comfort",
-        structure=vol.Schema({vol.Required("summary"): TextSelector()}),
+        structure=vol.Schema(
+            {
+                vol.Required("summary"): TextSelector(),
+                vol.Optional("note"): TextSelector(),
+            }
+        ),
     )
     chat_log = SimpleNamespace(llm_api=None)
 
     text_format = _structured_output_format(task, chat_log)
 
     assert text_format is not None
+    assert text_format["strict"] is True
     assert text_format["schema"] == {
         "type": "object",
-        "properties": {"summary": {"type": "string"}},
-        "required": ["summary"],
+        "properties": {
+            "summary": {"type": "string"},
+            "note": {"type": ["string", "null"]},
+        },
+        "required": ["summary", "note"],
         "additionalProperties": False,
     }
+
+
+def test_structured_output_preserves_composition_and_nullable_semantics() -> None:
+    structure = vol.Schema(
+        {
+            vol.Required("nullable"): vol.Any(str, None),
+            vol.Required("choices"): [
+                vol.Any(
+                    {
+                        vol.Required("kind"): "a",
+                        vol.Optional("note", default="default note"): str,
+                    },
+                    {
+                        vol.Required("kind"): "b",
+                        vol.Optional("count"): int,
+                    },
+                )
+            ],
+        }
+    )
+    task = SimpleNamespace(name="Composed output", structure=structure)
+
+    text_format = _structured_output_format(task, SimpleNamespace(llm_api=None))
+
+    assert text_format is not None
+    nullable_schema = text_format["schema"]["properties"]["nullable"]
+    assert nullable_schema["type"] == ["string", "null"]
+    assert "nullable" not in nullable_schema
+    assert _structured_data_from_text(
+        '{"nullable":null,"choices":[{"kind":"a","note":null}]}', structure
+    ) == {
+        "nullable": None,
+        "choices": [{"kind": "a", "note": "default note"}],
+    }
+
+
+def test_structured_output_restores_composed_key_placeholders() -> None:
+    structure = vol.Schema(
+        {vol.Required(vol.Any("email", "phone")): str}
+    )
+    task = SimpleNamespace(name="Contact output", structure=structure)
+
+    text_format = _structured_output_format(task, SimpleNamespace(llm_api=None))
+
+    assert text_format is not None
+    assert _structured_data_from_text(
+        '{"email":"person@example.com","phone":null}', structure
+    ) == {"email": "person@example.com"}
+
+
+def test_structured_output_restores_optional_defaults_inside_all() -> None:
+    structure = vol.Schema(
+        {
+            vol.Required("payload"): vol.All(
+                {
+                    vol.Required("name"): str,
+                    vol.Optional("note", default="fallback"): str,
+                }
+            )
+        }
+    )
+    task = SimpleNamespace(name="All output", structure=structure)
+
+    text_format = _structured_output_format(task, SimpleNamespace(llm_api=None))
+
+    assert text_format is not None
+    note_schema = text_format["schema"]["properties"]["payload"]["properties"]["note"]
+    assert note_schema["type"] == ["string", "null"]
+    assert _structured_data_from_text(
+        '{"payload":{"name":"x","note":null}}', structure
+    ) == {"payload": {"name": "x", "note": "fallback"}}
