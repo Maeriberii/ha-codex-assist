@@ -29,11 +29,13 @@ from .codex_client import (
     CodexCitationDelta,
     CodexClient,
     CodexRateLimitError,
+    CodexResponseItemDelta,
     CodexStreamDelta,
     CodexTextDelta,
     CodexToolCallDelta,
     codex_user_content_with_images,
 )
+from .codex_protocol import CodexNativeState, native_state_from_response_items
 from .codex_runtime import runtime_token_coordinator
 from .config_flow import (
     CONF_WEB_SEARCH,
@@ -338,7 +340,11 @@ async def _codex_stream_to_assistant_deltas(
 ) -> AsyncIterator[AssistantContentDeltaDict]:
     started = False
     seen_urls: set[str] = set()
+    response_items: list[dict[str, Any]] = []
     async for delta in stream:
+        if isinstance(delta, CodexResponseItemDelta):
+            response_items.append(delta.item)
+            continue
         if isinstance(delta, CodexCitationDelta):
             citation = _safe_citation(delta.citation)
             if citation is not None and citation.url not in seen_urls:
@@ -369,6 +375,10 @@ async def _codex_stream_to_assistant_deltas(
                     )
                 ]
             }
+    if native_state := native_state_from_response_items(response_items):
+        if not started:
+            yield {"role": "assistant"}
+        yield {"native": native_state}
 
 
 def _safe_citation(citation: CodexCitation) -> CodexCitation | None:
@@ -493,6 +503,10 @@ async def _codex_input_from_chat_log(
                 }
             )
             continue
+        native = getattr(content, "native", None)
+        if role == "assistant" and isinstance(native, CodexNativeState):
+            input_items.extend(native.items)
+            continue
         if role in {"user", "assistant"} and isinstance(text, str) and text.strip():
             item_content: str | list[dict[str, Any]] = text
             if role == "user":
@@ -526,17 +540,28 @@ def _trim_codex_input_items(
     if len(input_items) <= max_items:
         return input_items
 
-    trimmed = input_items[-max_items:]
-    included_calls = {
-        str(item.get("call_id"))
-        for item in trimmed
-        if item.get("type") == "function_call" and item.get("call_id")
-    }
-    return [
-        item
-        for item in trimmed
-        if item.get("type") != "function_call_output" or str(item.get("call_id")) in included_calls
-    ]
+    groups: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    for item in input_items:
+        if item.get("role") == "user" and current:
+            groups.append(current)
+            current = []
+        current.append(item)
+    if current:
+        groups.append(current)
+
+    selected: list[list[dict[str, Any]]] = []
+    selected_items = 0
+    for group in reversed(groups):
+        if not selected and len(group) > max_items:
+            raise ValueError(
+                f"Current Codex turn contains {len(group)} items; maximum is {max_items}"
+            )
+        if selected and selected_items + len(group) > max_items:
+            break
+        selected.append(group)
+        selected_items += len(group)
+    return [item for group in reversed(selected) for item in group]
 
 
 async def _async_image_attachments_for_codex(
