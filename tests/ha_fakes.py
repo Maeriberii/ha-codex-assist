@@ -185,6 +185,16 @@ def install_homeassistant_fakes(monkeypatch):
     class Required(Optional):
         pass
 
+    class Any:
+        def __init__(self, *validators):
+            self.validators = validators
+
+        def __call__(self, value):
+            return value
+
+    class All(Any):
+        pass
+
     config_entries.ConfigFlow = ConfigFlow
     config_entries.ConfigEntry = ConfigEntry
     config_entries.OptionsFlow = OptionsFlow
@@ -221,6 +231,7 @@ def install_homeassistant_fakes(monkeypatch):
     httpx_client.get_async_client = lambda hass: getattr(hass, "http_client", None)
     intent.IntentResponse = IntentResponse
     llm.LLM_API_ASSIST = "assist"
+    llm.selector_serializer = object()
     llm.ToolInput = ToolInput
     selector.SelectOptionDict = SelectOptionDict
     selector.SelectSelector = SelectSelector
@@ -234,6 +245,8 @@ def install_homeassistant_fakes(monkeypatch):
         schema, "schema", schema
     )
     vol.Invalid = Invalid
+    vol.Any = Any  # type: ignore[attr-defined]
+    vol.All = All  # type: ignore[attr-defined]
     vol.Schema = Schema
     vol.Optional = Optional
     vol.Required = Required  # type: ignore[attr-defined]
