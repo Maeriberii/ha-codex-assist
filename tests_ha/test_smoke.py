@@ -102,6 +102,11 @@ async def test_conversation_turn_streams_codex_reply(
     await _setup_entry(hass)
 
     async def fake_stream_turn(self: CodexClient, **kwargs: object):
+        tools = kwargs["tools"]
+        assert isinstance(tools, list)
+        function_tools = [tool for tool in tools if tool.get("type") == "function"]
+        assert function_tools
+        assert all(isinstance(tool.get("parameters"), dict) for tool in function_tools)
         yield CodexTextDelta("The porch light is on.")
 
     monkeypatch.setattr(CodexClient, "stream_turn", fake_stream_turn)

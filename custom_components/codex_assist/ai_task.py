@@ -14,7 +14,6 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.httpx_client import get_async_client
 from homeassistant.util import slugify
 from homeassistant.util.json import json_loads
-from voluptuous_openapi import convert
 
 from .codex_auth import (
     CodexAuthClient,
@@ -47,6 +46,7 @@ from .conversation import (
     _stream_codex_turn_into_chat_log,
 )
 from .error_formatting import request_failure_text
+from .schema_compat import to_openapi
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -431,7 +431,7 @@ def _structured_output_format(
         if chat_log.llm_api is not None
         else llm.selector_serializer
     )
-    schema = copy.deepcopy(convert(task.structure, custom_serializer=custom_serializer))
+    schema = copy.deepcopy(to_openapi(task.structure, custom_serializer=custom_serializer))
     _apply_codex_strict_schema(schema)
     return {
         "type": "json_schema",

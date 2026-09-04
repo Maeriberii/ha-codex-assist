@@ -41,7 +41,7 @@ jobs:
         run: uv run ruff check .
 
   ha-smoke:
-    name: Home Assistant 2026.8 stable contract tests
+    name: Home Assistant 2026.9 stable contract tests
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository

@@ -45,6 +45,7 @@ from .config_flow import (
     DEFAULT_WEB_SEARCH,
 )
 from .error_formatting import request_failure_text
+from .schema_compat import to_openapi
 
 MAX_TOOL_ITERATIONS = 5
 MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024
@@ -643,9 +644,7 @@ def _codex_tool_from_ha_tool(
     tool: llm.Tool,
     custom_serializer: Any,
 ) -> dict[str, Any]:
-    from voluptuous_openapi import convert  # noqa: PLC0415
-
-    schema = convert(tool.parameters, custom_serializer=custom_serializer)
+    schema = to_openapi(tool.parameters, custom_serializer=custom_serializer)
     unsupported_keys = {"oneOf", "anyOf", "allOf", "enum", "not"}
     if unsupported_keys.intersection(schema):
         schema = {k: v for k, v in schema.items() if k not in unsupported_keys}
