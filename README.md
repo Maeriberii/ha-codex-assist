@@ -28,7 +28,7 @@ Requirements: Home Assistant `2026.6.0` or newer, HACS, and a ChatGPT account or
 3. Restart Home Assistant.
 4. In ChatGPT, enable **Settings → Security → Enable device code authorization for Codex** if it is available on your account.
 5. Go to **Settings → Devices & services → Add integration**, or use the button above.
-6. Search for **Codex Assist** and complete device-code sign-in.
+6. Search for **Codex Assist**, complete device-code sign-in, and choose a chat model from the account’s discovered list.
 7. Select **Codex Assist** in your Assist pipeline.
 8. Test with a harmless exposed entity first, such as a single light.
 
@@ -58,10 +58,17 @@ and settings can be kept. See [Troubleshooting](https://github.com/itsreverence/
 
 ### Options
 
+The chat-model picker uses authenticated account discovery without adding guessed
+model names. It refreshes when you open options and every six hours while loaded.
+New setups prefer `gpt-5.6-terra` when listed; existing selections stay unchanged.
+Cached and unverified fallback lists are labeled. A saved model missing from the
+list is retained with a label so changing another setting does not replace it.
+See [Model discovery](docs/MODEL_DISCOVERY.md).
+
 The options flow keeps **Everyday settings** open and leaves **Advanced chat settings** and **Image-generation defaults** collapsed until needed. Everyday controls include the chat model, response length, and hosted web search. Advanced controls hold reasoning effort and a multiline system-prompt editor for longer Markdown instructions.
 
 <p align="center">
-  <img src="assets/codex-assist-settings-overview.png" alt="Native Home Assistant options dialog for Codex Assist, with everyday, advanced chat, and image-generation sections" width="430">
+  <img src="assets/codex-assist-settings-overview.png" alt="Example options layout from v0.4.3; current model choices come from account discovery" width="430">
 </p>
 
 <p align="center">

@@ -88,8 +88,12 @@ When auth or model handling changes:
 - confirm logs do not expose tokens, cookies, or device codes;
 - verify fallback models appear when discovery is unavailable;
 - verify authenticated model discovery when the backend supports it;
-- verify a stale saved model falls back safely;
-- verify discovery failure does not block setup.
+- verify an unlisted saved model is labeled and remains selected when other options are saved;
+- verify discovery failure offers an explicitly unverified fallback only when no successful cache exists;
+- verify a successful empty account list does not become a fallback list;
+- verify setup asks for the model only after sign-in;
+- verify concurrent refresh, 401 retry, cache invalidation after reauth, and periodic-refresh unload cleanup;
+- verify the preferred new model with text, native Assist tools, structured output, and hosted search before release.
 
 ## AI Task and media tests
 

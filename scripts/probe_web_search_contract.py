@@ -23,8 +23,8 @@ from custom_components.codex_assist.codex_client import (  # noqa: E402
     CODEX_BACKEND_BASE_URL,
     codex_headers,
 )
+from custom_components.codex_assist.const import DEFAULT_MODEL  # noqa: E402
 
-DEFAULT_MODEL = "gpt-5.4"
 FIXED_PROMPT = (
     "Use web search to identify the organization that maintains the IANA "
     "Reserved Domains page. Cite the source in the response."

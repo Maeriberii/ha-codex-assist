@@ -17,11 +17,9 @@ def _section_fields(schema, section_name):
     return _flat_fields(section_value.schema)
 
 
-def test_options_schema_keeps_saved_model_only_when_available(monkeypatch):
+def test_options_schema_preserves_unlisted_saved_model_with_explicit_label(monkeypatch):
     install_homeassistant_fakes(monkeypatch)
-    module = importlib.reload(
-        importlib.import_module("custom_components.codex_assist.config_flow")
-    )
+    module = importlib.reload(importlib.import_module("custom_components.codex_assist.config_flow"))
 
     schema = module._settings_schema(
         {
@@ -36,38 +34,35 @@ def test_options_schema_keeps_saved_model_only_when_available(monkeypatch):
     image_section = _flat_fields(schema)[module.SECTION_IMAGE_SETTINGS]
     chat_defaults = {key.key: key.default for key in chat_section.schema.schema}
     image_defaults = {key.key: key.default for key in image_section.schema.schema}
-    assert chat_defaults["model"] == module.DEFAULT_MODEL
+    assert chat_defaults["model"] == "retired-model"
+    choices = _section_fields(schema, module.SECTION_CHAT_SETTINGS)["model"].config.options
+    assert [choice.value for choice in choices] == ["gpt-5.3-codex", "retired-model"]
+    assert choices[-1].label == "retired-model (saved; not currently listed)"
     assert image_defaults["image_model"] == "gpt-image-2-medium"
     assert image_defaults["image_size"] == "1024x1024"
 
 
 def test_config_flow_returns_options_flow_instance(monkeypatch):
     install_homeassistant_fakes(monkeypatch)
-    module = importlib.reload(
-        importlib.import_module("custom_components.codex_assist.config_flow")
-    )
+    module = importlib.reload(importlib.import_module("custom_components.codex_assist.config_flow"))
 
     options_flow = module.CodexAssistConfigFlow.async_get_options_flow(object())
 
     assert isinstance(options_flow, module.CodexAssistOptionsFlow)
 
 
-def test_first_run_schema_only_asks_for_chat_model(monkeypatch):
+def test_first_run_signs_in_before_choosing_a_model(monkeypatch):
     install_homeassistant_fakes(monkeypatch)
-    module = importlib.reload(
-        importlib.import_module("custom_components.codex_assist.config_flow")
-    )
+    module = importlib.reload(importlib.import_module("custom_components.codex_assist.config_flow"))
 
     fields = _flat_fields(module._user_schema())
 
-    assert list(fields) == ["model"]
+    assert list(fields) == []
 
 
 def test_options_schema_groups_everyday_advanced_and_image_controls(monkeypatch):
     install_homeassistant_fakes(monkeypatch)
-    module = importlib.reload(
-        importlib.import_module("custom_components.codex_assist.config_flow")
-    )
+    module = importlib.reload(importlib.import_module("custom_components.codex_assist.config_flow"))
 
     schema = module._settings_schema({}, model_options=["gpt-5.4"])
     sections = _flat_fields(schema)
@@ -114,14 +109,10 @@ async def test_options_flow_uses_multiline_prompt_selector_and_preserves_markdow
     monkeypatch,
 ):
     install_homeassistant_fakes(monkeypatch)
-    module = importlib.reload(
-        importlib.import_module("custom_components.codex_assist.config_flow")
-    )
+    module = importlib.reload(importlib.import_module("custom_components.codex_assist.config_flow"))
     prompt = "# House rules\n\n- **Never** unlock doors.\n- Reply concisely."
     schema = module._settings_schema({}, model_options=["gpt-5.4"])
-    prompt_selector = _section_fields(schema, module.SECTION_ADVANCED_SETTINGS)[
-        module.CONF_PROMPT
-    ]
+    prompt_selector = _section_fields(schema, module.SECTION_ADVANCED_SETTINGS)[module.CONF_PROMPT]
     flow = module.CodexAssistOptionsFlow()
     flow.config_entry = SimpleNamespace(data={}, options={})
 
@@ -150,9 +141,7 @@ async def test_options_flow_uses_multiline_prompt_selector_and_preserves_markdow
 
 def test_section_input_is_flattened_for_existing_runtime_settings(monkeypatch):
     install_homeassistant_fakes(monkeypatch)
-    module = importlib.reload(
-        importlib.import_module("custom_components.codex_assist.config_flow")
-    )
+    module = importlib.reload(importlib.import_module("custom_components.codex_assist.config_flow"))
 
     flattened = module._flatten_settings_input(
         {
@@ -186,9 +175,7 @@ def test_section_input_is_flattened_for_existing_runtime_settings(monkeypatch):
 @pytest.mark.asyncio
 async def test_options_submission_preserves_hidden_reasoning_summary(monkeypatch):
     install_homeassistant_fakes(monkeypatch)
-    module = importlib.reload(
-        importlib.import_module("custom_components.codex_assist.config_flow")
-    )
+    module = importlib.reload(importlib.import_module("custom_components.codex_assist.config_flow"))
     flow = module.CodexAssistOptionsFlow()
     flow.config_entry = SimpleNamespace(
         data={"reasoning_summary": "detailed"},
@@ -215,3 +202,49 @@ async def test_options_submission_preserves_hidden_reasoning_summary(monkeypatch
 
     assert result["type"] == "create_entry"
     assert result["data"]["reasoning_summary"] == "detailed"
+
+
+@pytest.mark.parametrize(
+    "models, expected",
+    [
+        (["new-model", "gpt-5.6-terra"], "gpt-5.6-terra"),
+        (["new-model"], "new-model"),
+    ],
+)
+def test_setup_default_is_always_one_of_the_discovered_models(monkeypatch, models, expected):
+    install_homeassistant_fakes(monkeypatch)
+    module = importlib.reload(importlib.import_module("custom_components.codex_assist.config_flow"))
+    schema = module._model_schema({}, model_options=models)
+    assert next(iter(schema.schema)).default == expected
+    assert [o.value for o in _flat_fields(schema)["model"].config.options] == models
+
+
+async def test_options_marks_cached_list_and_preserves_absent_saved_model(monkeypatch):
+    install_homeassistant_fakes(monkeypatch)
+    module = importlib.reload(importlib.import_module("custom_components.codex_assist.config_flow"))
+    from custom_components.codex_assist.codex_models import ModelCatalog
+
+    async def catalog(*args, **kwargs):
+        assert kwargs["force"]
+        return ModelCatalog(("account-model",), "cached", "unavailable")
+
+    monkeypatch.setattr(module, "async_entry_model_catalog", catalog)
+    flow = module.CodexAssistOptionsFlow()
+    flow.config_entry = SimpleNamespace(data={"model": "saved-model"}, options={})
+    flow.hass = object()
+    result = await flow.async_step_init()
+    assert "cached list may be outdated" in result["description_placeholders"]["model_status"]
+    assert "saved model" in result["description_placeholders"]["model_status"]
+    rejected = await flow.async_step_init({"chat_settings": {"model": "guessed-model"}})
+    assert rejected["errors"] == {"base": "invalid_model"}
+    saved = await flow.async_step_init({"chat_settings": {"text_verbosity": "low"}})
+    assert saved["data"]["model"] == "saved-model"
+
+
+def test_empty_account_list_does_not_get_populated_with_defaults(monkeypatch):
+    install_homeassistant_fakes(monkeypatch)
+    module = importlib.reload(importlib.import_module("custom_components.codex_assist.config_flow"))
+    assert not module._model_schema({}, model_options=[]).schema
+    schema = module._settings_schema({"model": "saved-model"}, model_options=[])
+    choices = _section_fields(schema, module.SECTION_CHAT_SETTINGS)["model"].config.options
+    assert [o.value for o in choices] == ["saved-model"]

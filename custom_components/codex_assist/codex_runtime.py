@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
 
 from .codex_auth import CodexAuthTemporaryError, CodexReauthRequiredError, CodexTokenSet
+from .codex_models import ModelDiscoveryCache
 
 ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 
@@ -22,6 +23,7 @@ class RuntimeTokenCoordinator:
 
     def __init__(self) -> None:
         self._refresh_lock = asyncio.Lock()
+        self.model_cache = ModelDiscoveryCache()
 
     async def resolve(
         self,

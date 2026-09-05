@@ -44,6 +44,7 @@ from .config_flow import (
     DEFAULT_TEXT_VERBOSITY,
     DEFAULT_WEB_SEARCH,
 )
+from .const import DEFAULT_MODEL
 from .error_formatting import request_failure_text
 from .schema_compat import to_openapi
 
@@ -98,7 +99,7 @@ class CodexAssistConversationEntity(
         chat_log: conversation.ChatLog,
     ) -> conversation.ConversationResult:
         settings = {**self.entry.data, **self.entry.options}
-        model = settings.get("model", "gpt-5.4")
+        model = settings.get("model", DEFAULT_MODEL)
         prompt = settings.get(
             "prompt",
             "You are a concise Home Assistant Assist conversation agent.",

@@ -27,7 +27,7 @@ flowchart LR
 ## Main components
 
 - **Config flow** handles Codex-style device-code sign-in. It stores OAuth tokens in the Home Assistant config entry and exposes integration options.
-- **Model discovery** offers a curated fallback model list. Once authenticated, it can ask the Codex backend for model IDs available to that account.
+- **Model discovery** uses only visible model IDs returned for the signed-in account. An entry-scoped, in-memory cache survives temporary failures; a small, explicitly unverified fallback list is used only before a successful result.
 - **Conversation agent** registers `conversation.codex_assist` for Home Assistant Assist pipelines.
 - **AI Task entity** registers a native provider for text, structured data, supported image attachments, and image generation.
 - **Runtime token coordinator** serializes refresh-token rotation per config entry. Concurrent Conversation and AI Task requests reuse the winning refresh instead of invalidating one another.
@@ -57,6 +57,30 @@ For stateless multi-turn requests, Codex Assist keeps completed provider output 
 5. Codex Assist returns text, structured data, or generated image bytes through Home Assistant's native AI Task result types.
 
 Normal Assist conversation surfaces may not expose an upload button even though Home Assistant chat-log objects can carry attachments internally. Use AI Task surfaces that advertise attachment support when testing native attachments.
+
+## Model discovery lifecycle
+
+First setup completes device-code sign-in before model selection. Authenticated
+discovery is refreshed when options open and every six hours while the entry is
+loaded, independently of Assist requests. The periodic callback is cancelled on
+unload. Options and periodic discovery resolve and refresh credentials through the
+same token coordinator as conversation and AI Task. An HTTP 401 triggers at most
+one coordinated refresh and retry.
+
+Each entry caches only model IDs in memory. Results are immutable, concurrent
+refreshes are coalesced, successful requests are debounced for 30 seconds, and
+failed requests have a 60-second retry backoff. Reauthentication and reconfiguration
+clear the cache and invalidate any in-flight result from the previous sign-in.
+Successful empty lists remain empty; malformed responses, HTTP errors, and network
+failures are distinguished from successful discovery. Cached results and fallback
+suggestions are labeled in the form.
+
+Terra is preferred for a new selection only when advertised. Otherwise the first
+discovered model is preselected. Existing models are never changed by discovery:
+an absent saved model remains as an explicitly labeled saved choice. The runtime
+does not switch models or replay device-control requests after a model rejection.
+Image-generation model choices remain a separate curated set. See
+[MODEL_DISCOVERY.md](MODEL_DISCOVERY.md) for user-facing behavior.
 
 ## Schema conversion compatibility
 
