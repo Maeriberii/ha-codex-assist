@@ -47,7 +47,7 @@ SECTION_IMAGE_SETTINGS = "image_settings"
 SECTION_RUNTIME_ORCHESTRATION = "runtime_orchestration"
 DEFAULT_PROMPT = "You are a concise Home Assistant Assist conversation agent."
 DEFAULT_REASONING_EFFORT = "low"
-DEFAULT_REASONING_SUMMARY = "auto"
+DEFAULT_REASONING_SUMMARY = "off"
 DEFAULT_TEXT_VERBOSITY = "medium"
 DEFAULT_WEB_SEARCH = False
 
