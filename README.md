@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/Maeriberii/ha-codex-assist/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/Maeriberii/ha-codex-assist?style=for-the-badge"></a>
   <a href="https://github.com/Maeriberii/ha-codex-assist/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Maeriberii/ha-codex-assist/ci.yml?branch=main&style=for-the-badge&label=CI"></a>
-  <a href="https://www.hacs.xyz/docs/use/repositories/dashboard/"><img alt="Available in HACS" src="https://img.shields.io/badge/HACS-Default-41BDF5?style=for-the-badge"></a>
+  <a href="https://www.hacs.xyz/docs/use/repositories/dashboard/"><img alt="Available in HACS" src="https://img.shields.io/badge/HACS-Custom-41BDF5?style=for-the-badge"></a>
 </p>
 
 Use OpenAI Codex / ChatGPT as a Home Assistant Assist conversation agent and AI Task provider.
