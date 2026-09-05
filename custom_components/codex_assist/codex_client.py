@@ -572,7 +572,10 @@ def _nonnegative_int(value: Any) -> int:
 
 def _log_usage(operation: str, usage: CodexUsage) -> None:
     LOGGER.debug(
-        "Codex %s usage input=%d cached=%d cache_write=%d output=%d reasoning=%d total=%d rollout_budget=%s",
+        (
+            "Codex %s usage input=%d cached=%d cache_write=%d output=%d "
+            "reasoning=%d total=%d rollout_budget=%s"
+        ),
         operation,
         usage.input_tokens,
         usage.cached_input_tokens,
