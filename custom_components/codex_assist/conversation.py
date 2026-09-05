@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -43,9 +44,16 @@ from .config_flow import (
     DEFAULT_REASONING_SUMMARY,
     DEFAULT_TEXT_VERBOSITY,
     DEFAULT_WEB_SEARCH,
+    normalize_llm_api_selection,
 )
 from .error_formatting import request_failure_text
+from .runtime_options import normalize_runtime_options
 from .schema_compat import to_openapi
+
+try:
+    from homeassistant.const import CONF_LLM_HASS_API
+except ImportError:
+    CONF_LLM_HASS_API = "llm_hass_api"
 
 MAX_TOOL_ITERATIONS = 5
 MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024
@@ -98,6 +106,7 @@ class CodexAssistConversationEntity(
         chat_log: conversation.ChatLog,
     ) -> conversation.ConversationResult:
         settings = {**self.entry.data, **self.entry.options}
+        runtime_options = normalize_runtime_options(settings)
         model = settings.get("model", "gpt-5.4")
         prompt = settings.get(
             "prompt",
@@ -107,13 +116,17 @@ class CodexAssistConversationEntity(
         reasoning_summary = settings.get("reasoning_summary", DEFAULT_REASONING_SUMMARY)
         text_verbosity = settings.get("text_verbosity", DEFAULT_TEXT_VERBOSITY)
         web_search = bool(settings.get(CONF_WEB_SEARCH, DEFAULT_WEB_SEARCH))
+        llm_hass_api = (
+            normalize_llm_api_selection(settings.get(CONF_LLM_HASS_API))
+            or [llm.LLM_API_ASSIST]
+        )
         citations: list[CodexCitation] = []
 
         response = intent.IntentResponse(language=user_input.language)
         try:
             await chat_log.async_provide_llm_data(
                 user_input.as_llm_context(DOMAIN),
-                llm.LLM_API_ASSIST,
+                llm_hass_api,
                 prompt,
                 user_input.extra_system_prompt,
             )
@@ -144,10 +157,15 @@ class CodexAssistConversationEntity(
             )
             return conversation.async_get_result_from_chat_log(user_input, chat_log)
 
-        codex = CodexClient(http_client=http_client, access_token=tokens.access_token)
+        codex = CodexClient(
+            http_client=http_client,
+            access_token=tokens.access_token,
+            stream_timeout=runtime_options.stream_timeout,
+            image_generation_timeout=runtime_options.image_generation_timeout,
+        )
         try:
-            for _iteration in range(MAX_TOOL_ITERATIONS + 1):
-                allow_tools = _iteration < MAX_TOOL_ITERATIONS
+            for _iteration in range(runtime_options.tool_iterations + 1):
+                allow_tools = _iteration < runtime_options.tool_iterations
                 try:
                     tool_call_requested = await _stream_codex_turn_into_chat_log(
                         chat_log=chat_log,
@@ -195,6 +213,8 @@ class CodexAssistConversationEntity(
                     codex = CodexClient(
                         http_client=http_client,
                         access_token=tokens.access_token,
+                        stream_timeout=runtime_options.stream_timeout,
+                        image_generation_timeout=runtime_options.image_generation_timeout,
                     )
                     try:
                         tool_call_requested = await _stream_codex_turn_into_chat_log(
@@ -303,6 +323,7 @@ async def _stream_codex_turn_into_chat_log(
     text_format: dict[str, Any] | None = None,
     allow_tools: bool = True,
     citation_sink: list[CodexCitation] | None = None,
+    on_text_delta: Callable[[str], None] | None = None,
 ) -> bool:
     tool_call_requested = False
 
@@ -310,25 +331,42 @@ async def _stream_codex_turn_into_chat_log(
         nonlocal tool_call_requested
         tool_call_requested = True
 
-    async for _delta in chat_log.async_add_delta_content_stream(
-        entity_id,
-        _codex_stream_to_assistant_deltas(
-            codex.stream_turn(
-                model=model,
-                instructions=instructions,
-                input_items=input_items,
-                tools=tools,
-                reasoning_effort=reasoning_effort,
-                reasoning_summary=reasoning_summary,
-                text_verbosity=text_verbosity,
-                text_format=text_format,
-            ),
-            on_tool_call=mark_tool_call_requested,
-            allow_tools=allow_tools,
-            citation_sink=citation_sink,
-        ),
-    ):
-        pass
+    emitted_text = False
+
+    def mark_text_emitted(text: str) -> None:
+        nonlocal emitted_text
+        if text:
+            emitted_text = True
+            if on_text_delta is not None:
+                on_text_delta(text)
+
+    for attempt in range(2):
+        try:
+            async for _delta in chat_log.async_add_delta_content_stream(
+                entity_id,
+                _codex_stream_to_assistant_deltas(
+                    codex.stream_turn(
+                        model=model,
+                        instructions=instructions,
+                        input_items=input_items,
+                        tools=tools,
+                        reasoning_effort=reasoning_effort,
+                        reasoning_summary=reasoning_summary,
+                        text_verbosity=text_verbosity,
+                        text_format=text_format,
+                    ),
+                    on_tool_call=mark_tool_call_requested,
+                    on_text_delta=mark_text_emitted,
+                    allow_tools=allow_tools,
+                    citation_sink=citation_sink,
+                ),
+            ):
+                pass
+            break
+        except (httpx.RemoteProtocolError, httpx.ReadError):
+            if allow_tools or emitted_text or attempt:
+                raise
+            await asyncio.sleep(0.5)
     return tool_call_requested
 
 
@@ -336,6 +374,7 @@ async def _codex_stream_to_assistant_deltas(
     stream: AsyncIterator[CodexStreamDelta],
     *,
     on_tool_call: Callable[[], None] | None = None,
+    on_text_delta: Callable[[str], None] | None = None,
     allow_tools: bool = True,
     citation_sink: list[CodexCitation] | None = None,
 ) -> AsyncIterator[AssistantContentDeltaDict]:
@@ -359,6 +398,8 @@ async def _codex_stream_to_assistant_deltas(
             yield {"role": "assistant"}
             started = True
         if isinstance(delta, CodexTextDelta):
+            if on_text_delta is not None:
+                on_text_delta(delta.text)
             yield {"content": delta.text}
         elif isinstance(delta, CodexToolCallDelta):
             if not allow_tools:

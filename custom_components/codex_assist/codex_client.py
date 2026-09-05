@@ -7,10 +7,23 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+import httpx
+
 from .codex_image import image_model_quality, validate_image_size
+from .runtime_options import (
+    DEFAULT_IMAGE_GENERATION_TIMEOUT,
+    DEFAULT_STREAM_CONNECT_TIMEOUT,
+    DEFAULT_STREAM_POOL_TIMEOUT,
+    DEFAULT_STREAM_WRITE_TIMEOUT,
+)
 
 CODEX_BACKEND_BASE_URL = "https://chatgpt.com/backend-api/codex"
-CODEX_STREAM_TIMEOUT = 300
+CODEX_STREAM_TIMEOUT = httpx.Timeout(
+    connect=DEFAULT_STREAM_CONNECT_TIMEOUT,
+    read=None,
+    write=DEFAULT_STREAM_WRITE_TIMEOUT,
+    pool=DEFAULT_STREAM_POOL_TIMEOUT,
+)
 
 
 class AsyncPostClient(Protocol):
@@ -86,10 +99,14 @@ class CodexClient:
         http_client: AsyncPostClient,
         access_token: str,
         base_url: str = CODEX_BACKEND_BASE_URL,
+        stream_timeout: httpx.Timeout = CODEX_STREAM_TIMEOUT,
+        image_generation_timeout: int = DEFAULT_IMAGE_GENERATION_TIMEOUT,
     ) -> None:
         self._http_client = http_client
         self._access_token = access_token
         self._base_url = base_url.rstrip("/")
+        self._stream_timeout = stream_timeout
+        self._image_generation_timeout = image_generation_timeout
 
     async def generate_text(
         self,
@@ -172,7 +189,7 @@ class CodexClient:
             f"{self._base_url}/responses",
             headers=codex_headers(self._access_token),
             json=payload,
-            timeout=CODEX_STREAM_TIMEOUT,
+            timeout=self._stream_timeout,
         ) as response:
             if response.status_code != 200:
                 error = await _stream_response_error(response)
@@ -261,7 +278,7 @@ class CodexClient:
             f"{self._base_url}/responses",
             headers=codex_headers(self._access_token),
             json=payload,
-            timeout=300,
+            timeout=self._image_generation_timeout,
         ) as response:
             if response.status_code != 200:
                 error = await _stream_response_error(response)

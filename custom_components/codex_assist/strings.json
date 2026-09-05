@@ -61,11 +61,13 @@
             "name": "Advanced chat settings",
             "data": {
               "prompt": "System prompt",
-              "reasoning_effort": "Reasoning effort"
+              "reasoning_effort": "Reasoning effort",
+              "llm_hass_api": "Home Assistant LLM APIs"
             },
             "data_description": {
               "prompt": "Standing instructions applied to Assist conversations.",
-              "reasoning_effort": "How much reasoning supported models should use before answering."
+              "reasoning_effort": "How much reasoning supported models should use before answering.",
+              "llm_hass_api": "Select only the Home Assistant LLM APIs this conversation may use."
             }
           },
           "image_settings": {
@@ -78,12 +80,29 @@
               "image_model": "Default quality for images created through Home Assistant AI Task.",
               "image_size": "Default shape and resolution for generated images."
             }
+          },
+          "runtime_orchestration": {
+            "name": "Runtime and orchestration",
+            "data": {
+              "tool_iterations": "Tool-capable rounds",
+              "stream_connect_timeout": "Stream connect timeout",
+              "stream_write_timeout": "Stream write timeout",
+              "stream_pool_timeout": "Stream pool timeout",
+              "stream_read_timeout": "Stream read timeout",
+              "image_generation_timeout": "Image-generation timeout"
+            },
+            "data_description": {
+              "tool_iterations": "Maximum model rounds that may request tools before one final tools-disabled synthesis.",
+              "stream_read_timeout": "Set to 0 to allow a quiet open SSE stream to continue without an idle read limit."
+            }
           }
         }
       }
     },
     "error": {
-      "invalid_model": "Choose a listed model or keep your saved model."
+      "invalid_model": "Choose a listed model or keep your saved model.",
+      "select_at_least_one_llm_api": "Select at least one Home Assistant LLM API.",
+      "value_out_of_range": "Enter a value within the allowed range."
     }
   }
 }

@@ -127,6 +127,9 @@ def install_homeassistant_fakes(monkeypatch):
     class SelectSelectorMode:
         DROPDOWN = "dropdown"
 
+    class NumberSelectorMode:
+        BOX = "box"
+
     @dataclass
     class SelectOptionDict:
         value: str
@@ -136,6 +139,7 @@ def install_homeassistant_fakes(monkeypatch):
     class SelectSelectorConfig:
         options: list
         mode: str
+        multiple: bool = False
 
     @dataclass
     class SelectSelector:
@@ -148,6 +152,18 @@ def install_homeassistant_fakes(monkeypatch):
     @dataclass
     class TextSelector:
         config: TextSelectorConfig
+
+    @dataclass
+    class NumberSelectorConfig:
+        min: int
+        max: int
+        step: int
+        mode: str
+        unit_of_measurement: str | None = None
+
+    @dataclass
+    class NumberSelector:
+        config: NumberSelectorConfig
 
     class Section:
         def __init__(self, schema, options=None):
@@ -173,7 +189,7 @@ def install_homeassistant_fakes(monkeypatch):
             self.default = default
 
         def __hash__(self):
-            return hash((self.key, self.default))
+            return hash((self.key, repr(self.default)))
 
         def __eq__(self, other):
             return (
@@ -231,12 +247,16 @@ def install_homeassistant_fakes(monkeypatch):
     httpx_client.get_async_client = lambda hass: getattr(hass, "http_client", None)
     intent.IntentResponse = IntentResponse
     llm.LLM_API_ASSIST = "assist"
+    llm.async_get_apis = lambda hass: []
     llm.selector_serializer = object()
     llm.ToolInput = ToolInput
     selector.SelectOptionDict = SelectOptionDict
     selector.SelectSelector = SelectSelector
     selector.SelectSelectorConfig = SelectSelectorConfig
     selector.SelectSelectorMode = SelectSelectorMode
+    selector.NumberSelector = NumberSelector
+    selector.NumberSelectorConfig = NumberSelectorConfig
+    selector.NumberSelectorMode = NumberSelectorMode
     selector.TextSelector = TextSelector
     selector.TextSelectorConfig = TextSelectorConfig
     util_json.json_loads = __import__("json").loads

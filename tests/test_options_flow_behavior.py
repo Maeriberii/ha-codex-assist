@@ -71,6 +71,7 @@ def test_options_schema_groups_everyday_advanced_and_image_controls(monkeypatch)
         module.SECTION_CHAT_SETTINGS,
         module.SECTION_ADVANCED_SETTINGS,
         module.SECTION_IMAGE_SETTINGS,
+        module.SECTION_RUNTIME_ORCHESTRATION,
     ]
     assert sections[module.SECTION_CHAT_SETTINGS].options == {"collapsed": False}
     assert sections[module.SECTION_ADVANCED_SETTINGS].options == {"collapsed": True}
@@ -248,3 +249,62 @@ def test_empty_account_list_does_not_get_populated_with_defaults(monkeypatch):
     schema = module._settings_schema({"model": "saved-model"}, model_options=[])
     choices = _section_fields(schema, module.SECTION_CHAT_SETTINGS)["model"].config.options
     assert [o.value for o in choices] == ["saved-model"]
+
+
+def test_options_schema_exposes_only_explicitly_selected_llm_apis(monkeypatch):
+    install_homeassistant_fakes(monkeypatch)
+    module = importlib.reload(importlib.import_module("custom_components.codex_assist.config_flow"))
+    apis = [
+        SimpleNamespace(id="assist", name="Assist"),
+        SimpleNamespace(id="mcp-grafana", name="Grafana MCP"),
+    ]
+
+    schema = module._settings_schema(
+        {module.CONF_LLM_HASS_API: "mcp-grafana"},
+        model_options=["gpt-5.4"],
+        llm_apis=apis,
+    )
+    field = _section_fields(schema, module.SECTION_ADVANCED_SETTINGS)[module.CONF_LLM_HASS_API]
+
+    assert field.config.multiple is True
+    assert [option.value for option in field.config.options] == ["assist", "mcp-grafana"]
+    assert module.normalize_llm_api_selection("mcp-grafana") == ["mcp-grafana"]
+    assert module.normalize_llm_api_selection([]) == []
+
+
+@pytest.mark.asyncio
+async def test_options_roundtrip_preserves_downstream_runtime_and_api_settings(monkeypatch):
+    install_homeassistant_fakes(monkeypatch)
+    module = importlib.reload(importlib.import_module("custom_components.codex_assist.config_flow"))
+    flow = module.CodexAssistOptionsFlow()
+    flow.config_entry = SimpleNamespace(
+        data={"model": "gpt-5.4", "reasoning_summary": "detailed"},
+        options={module.CONF_LLM_HASS_API: "mcp-grafana", "tool_iterations": 12},
+    )
+
+    result = await flow.async_step_init(
+        {
+            module.SECTION_CHAT_SETTINGS: {"text_verbosity": "low", "web_search": False},
+            module.SECTION_ADVANCED_SETTINGS: {
+                "prompt": "Keep control local.",
+                "reasoning_effort": "low",
+                module.CONF_LLM_HASS_API: ["mcp-grafana"],
+            },
+            module.SECTION_IMAGE_SETTINGS: {
+                "image_model": "gpt-image-2-medium",
+                "image_size": "1024x1024",
+            },
+            module.SECTION_RUNTIME_ORCHESTRATION: {
+                "tool_iterations": 12,
+                "stream_connect_timeout": 10,
+                "stream_write_timeout": 30,
+                "stream_pool_timeout": 10,
+                "stream_read_timeout": 0,
+                "image_generation_timeout": 300,
+            },
+        }
+    )
+
+    assert result["data"][module.CONF_LLM_HASS_API] == ["mcp-grafana"]
+    assert result["data"]["tool_iterations"] == 12
+    assert result["data"]["reasoning_summary"] == "detailed"
