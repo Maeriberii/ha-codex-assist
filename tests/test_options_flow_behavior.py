@@ -207,7 +207,7 @@ async def test_options_submission_preserves_hidden_reasoning_summary(monkeypatch
 @pytest.mark.parametrize(
     "models, expected",
     [
-        (["new-model", "gpt-5.6-terra"], "gpt-5.6-terra"),
+        (["new-model", "gpt-5.6-terra"], "new-model"),
         (["new-model"], "new-model"),
     ],
 )

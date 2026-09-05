@@ -537,7 +537,7 @@ async def test_new_setup_discovers_models_after_owned_sign_in(hass, monkeypatch)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input={})
     assert result["step_id"] == "model"
     model_field, model_selector = next(iter(result["data_schema"].schema.items()))
-    assert model_field.default() == "gpt-5.6-terra"
+    assert model_field.default() == "future-model"
     assert [o["value"] for o in model_selector.config["options"]] == [
         "future-model",
         "gpt-5.6-terra",

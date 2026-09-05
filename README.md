@@ -60,7 +60,7 @@ and settings can be kept. See [Troubleshooting](https://github.com/itsreverence/
 
 The chat-model picker uses authenticated account discovery without adding guessed
 model names. It refreshes when you open options and every six hours while loaded.
-New setups prefer `gpt-5.6-terra` when listed; existing selections stay unchanged.
+New setups preselect the first model in the account’s priority order; existing selections stay unchanged.
 Cached and unverified fallback lists are labeled. A saved model missing from the
 list is retained with a label so changing another setting does not replace it.
 See [Model discovery](docs/MODEL_DISCOVERY.md).

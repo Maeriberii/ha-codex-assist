@@ -6,9 +6,9 @@ order. It does not invent model IDs, add `-pro` variants, or insert a hardcoded
 model into a successful discovery result. New models can appear without updating
 the integration.
 
-During first setup, sign in before choosing a model. `gpt-5.6-terra` is preselected
-when it is listed; otherwise the first returned model is preselected. Existing
-configured models are not migrated automatically.
+During first setup, sign in before choosing a model. The first model in the
+account’s returned priority order is preselected. Existing configured models
+are not migrated automatically.
 
 The list refreshes when you open options and every six hours while the integration
 is loaded. Repeated opens within 30 seconds reuse the cache. Failed requests have

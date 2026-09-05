@@ -36,7 +36,6 @@ from .config_flow import (
     DEFAULT_TEXT_VERBOSITY,
     DEFAULT_WEB_SEARCH,
 )
-from .const import DEFAULT_MODEL
 from .conversation import (
     MAX_TOOL_ITERATIONS,
     _codex_input_from_chat_log,
@@ -97,7 +96,7 @@ class CodexAssistAITaskEntity(ai_task.AITaskEntity):
     ) -> ai_task.GenDataTaskResult:
         """Generate data from instructions and optional HA-native attachments."""
         settings = {**self.entry.data, **self.entry.options}
-        model = settings.get("model", DEFAULT_MODEL)
+        model = settings.get("model", "gpt-5.4")
         prompt = settings.get(
             "prompt",
             "You are a concise Home Assistant AI Task agent.",
@@ -187,7 +186,7 @@ class CodexAssistAITaskEntity(ai_task.AITaskEntity):
     ) -> ai_task.GenImageTaskResult:
         """Generate an image from instructions and optional HA-native attachments."""
         settings = {**self.entry.data, **self.entry.options}
-        chat_model = settings.get("model", DEFAULT_MODEL)
+        chat_model = settings.get("model", "gpt-5.4")
         image_model = settings.get("image_model", DEFAULT_IMAGE_MODEL)
         image_size = settings.get("image_size", DEFAULT_IMAGE_SIZE)
 

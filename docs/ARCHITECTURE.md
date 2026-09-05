@@ -75,8 +75,8 @@ Successful empty lists remain empty; malformed responses, HTTP errors, and netwo
 failures are distinguished from successful discovery. Cached results and fallback
 suggestions are labeled in the form.
 
-Terra is preferred for a new selection only when advertised. Otherwise the first
-discovered model is preselected. Existing models are never changed by discovery:
+The first discovered model in the account’s priority order is preselected for new
+setups. Existing models are never changed by discovery:
 an absent saved model remains as an explicitly labeled saved choice. The runtime
 does not switch models or replay device-control requests after a model rejection.
 Image-generation model choices remain a separate curated set. See

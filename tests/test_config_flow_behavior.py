@@ -277,7 +277,7 @@ async def test_model_step_labels_fallback_on_discovery_failure(config_flow_modul
     flow._setup_data = {"access_token": "access-1"}
     result = await flow.async_step_model()
     assert "unverified" in result["description_placeholders"]["model_status"]
-    saved = await flow.async_step_model({"model": config_flow_module.DEFAULT_MODEL})
+    saved = await flow.async_step_model({"model": _schema_defaults(result["data_schema"])["model"]})
     assert saved["type"] == "create_entry"
 
 

@@ -10,11 +10,10 @@ from typing import Any, Literal, Protocol
 import httpx
 
 from .codex_client import codex_headers
-from .const import DEFAULT_MODEL
 
 CODEX_MODELS_URL = "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0"
 # Only used when this session has no successful account discovery result.
-DEFAULT_CODEX_MODELS = [DEFAULT_MODEL, "gpt-5.6-sol", "gpt-5.6-luna"]
+DEFAULT_CODEX_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
 MODEL_CACHE_SECONDS = 6 * 60 * 60
 MODEL_RETRY_SECONDS = 60
 MODEL_REFRESH_DEBOUNCE_SECONDS = 30

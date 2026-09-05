@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .codex_image import image_model_quality, validate_image_size
-from .const import DEFAULT_MODEL
 
 CODEX_BACKEND_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_STREAM_TIMEOUT = 300
@@ -242,7 +241,7 @@ class CodexClient:
         *,
         prompt: str,
         input_items: list[dict[str, Any]] | None = None,
-        chat_model: str = DEFAULT_MODEL,
+        chat_model: str = "gpt-5.4",
         image_model: str = "gpt-image-2-medium",
         size: str = "1024x1024",
     ) -> CodexImageResult:

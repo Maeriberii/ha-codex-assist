@@ -22,7 +22,6 @@ from .codex_image import (
     IMAGE_SIZE_OPTIONS,
 )
 from .codex_models import ModelCatalog, ModelDiscoveryCache, fetch_codex_model_ids
-from .const import DEFAULT_MODEL
 from .model_discovery import async_entry_model_catalog
 
 CONF_ACCESS_TOKEN = "access_token"
@@ -266,9 +265,7 @@ def _settings_schema(
 ) -> vol.Schema:
     model_options = list(dict.fromkeys(model_options))
     saved_model = defaults.get(CONF_MODEL)
-    model_default = saved_model or (
-        DEFAULT_MODEL if DEFAULT_MODEL in model_options else next(iter(model_options), None)
-    )
+    model_default = saved_model or next(iter(model_options), None)
     image_model_default = defaults.get(CONF_IMAGE_MODEL, DEFAULT_IMAGE_MODEL)
     if image_model_default not in IMAGE_MODEL_QUALITY:
         image_model_default = DEFAULT_IMAGE_MODEL
@@ -342,7 +339,7 @@ def _model_schema(defaults: dict[str, Any], *, model_options: list[str]) -> vol.
     model_default = (
         saved_model
         if saved_model in model_options
-        else (DEFAULT_MODEL if DEFAULT_MODEL in model_options else next(iter(model_options), None))
+        else next(iter(model_options), None)
     )
     if not model_options:
         return vol.Schema({})

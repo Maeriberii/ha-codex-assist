@@ -93,7 +93,7 @@ When auth or model handling changes:
 - verify a successful empty account list does not become a fallback list;
 - verify setup asks for the model only after sign-in;
 - verify concurrent refresh, 401 retry, cache invalidation after reauth, and periodic-refresh unload cleanup;
-- verify the preferred new model with text, native Assist tools, structured output, and hosted search before release.
+- verify new setup preselects the first advertised model, regardless of its model ID.
 
 ## AI Task and media tests
 
