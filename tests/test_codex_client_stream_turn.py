@@ -84,6 +84,51 @@ async def test_stream_turn_yields_text_deltas_and_posts_advanced_options():
 
 
 @pytest.mark.asyncio
+async def test_stream_turn_posts_prompt_cache_key_and_logs_content_free_usage(caplog):
+    response = FakeStreamResponse(
+        200,
+        _event(
+            {
+                "type": "response.completed",
+                "response": {
+                    "usage": {
+                        "input_tokens": 120,
+                        "input_tokens_details": {
+                            "cached_tokens": 80,
+                            "cache_write_tokens": 20,
+                        },
+                        "output_tokens": 12,
+                        "output_tokens_details": {"reasoning_tokens": 4},
+                        "total_tokens": 132,
+                        "codex_rollout_budget_units": 1.5,
+                    }
+                },
+            }
+        ),
+    )
+    http = FakeHttpClient(response)
+    client = CodexClient(http_client=http, access_token="token-1")
+    caplog.set_level("DEBUG", logger="custom_components.codex_assist.codex_client")
+
+    deltas = [
+        delta
+        async for delta in client.stream_turn(
+            model="gpt-5.4",
+            instructions="Do not log this private prompt.",
+            input_items=[{"role": "user", "content": "nor this private input"}],
+            prompt_cache_key="opaque-cache-key",
+        )
+    ]
+
+    assert deltas == []
+    assert http.calls[0][2]["json"]["prompt_cache_key"] == "opaque-cache-key"
+    assert "input=120 cached=80 cache_write=20 output=12 reasoning=4 total=132" in caplog.text
+    assert "rollout_budget=1.5" in caplog.text
+    assert "private prompt" not in caplog.text
+    assert "private input" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_stream_turn_posts_structured_output_format_with_verbosity():
     response = FakeStreamResponse(200, [])
     http = FakeHttpClient(response)

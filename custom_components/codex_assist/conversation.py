@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -56,6 +57,9 @@ except ImportError:
     CONF_LLM_HASS_API = "llm_hass_api"
 
 MAX_TOOL_ITERATIONS = 5
+MAX_CODEX_INPUT_ITEMS = 24
+MAX_CODEX_HISTORY_BYTES = 128 * 1024
+IMAGE_HISTORY_USER_TURNS = 2
 MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_ATTACHMENTS = 4
 MAX_TOTAL_IMAGE_ATTACHMENT_BYTES = 20 * 1024 * 1024
@@ -121,6 +125,9 @@ class CodexAssistConversationEntity(
             or [llm.LLM_API_ASSIST]
         )
         citations: list[CodexCitation] = []
+        prompt_cache_key = _conversation_prompt_cache_key(
+            self.entry.entry_id, user_input.conversation_id or chat_log.conversation_id
+        )
 
         response = intent.IntentResponse(language=user_input.language)
         try:
@@ -186,6 +193,7 @@ class CodexAssistConversationEntity(
                         text_verbosity=text_verbosity,
                         allow_tools=allow_tools,
                         citation_sink=citations,
+                        prompt_cache_key=prompt_cache_key,
                     )
                 except CodexAuthenticationError as err:
                     LOGGER.warning(
@@ -236,6 +244,7 @@ class CodexAssistConversationEntity(
                             text_verbosity=text_verbosity,
                             allow_tools=allow_tools,
                             citation_sink=citations,
+                            prompt_cache_key=prompt_cache_key,
                         )
                     except CodexAuthenticationError as retry_err:
                         LOGGER.warning(
@@ -292,6 +301,12 @@ def _request_failure_text(err: BaseException) -> str:
     return request_failure_text("Codex Assist failed", err)
 
 
+def _conversation_prompt_cache_key(entry_id: str, conversation_id: str) -> str:
+    """Return an opaque stable cache partition for one HA conversation."""
+    digest = hashlib.sha256(f"{entry_id}\0{conversation_id}".encode()).hexdigest()
+    return f"ha-codex-assist:{digest}"
+
+
 async def _run_tool_rounds(
     *,
     max_tool_rounds: int,
@@ -324,6 +339,7 @@ async def _stream_codex_turn_into_chat_log(
     allow_tools: bool = True,
     citation_sink: list[CodexCitation] | None = None,
     on_text_delta: Callable[[str], None] | None = None,
+    prompt_cache_key: str | None = None,
 ) -> bool:
     tool_call_requested = False
 
@@ -342,19 +358,22 @@ async def _stream_codex_turn_into_chat_log(
 
     for attempt in range(2):
         try:
+            stream_kwargs: dict[str, Any] = {
+                "model": model,
+                "instructions": instructions,
+                "input_items": input_items,
+                "tools": tools,
+                "reasoning_effort": reasoning_effort,
+                "reasoning_summary": reasoning_summary,
+                "text_verbosity": text_verbosity,
+                "text_format": text_format,
+            }
+            if prompt_cache_key is not None:
+                stream_kwargs["prompt_cache_key"] = prompt_cache_key
             async for _delta in chat_log.async_add_delta_content_stream(
                 entity_id,
                 _codex_stream_to_assistant_deltas(
-                    codex.stream_turn(
-                        model=model,
-                        instructions=instructions,
-                        input_items=input_items,
-                        tools=tools,
-                        reasoning_effort=reasoning_effort,
-                        reasoning_summary=reasoning_summary,
-                        text_verbosity=text_verbosity,
-                        text_format=text_format,
-                    ),
+                    codex.stream_turn(**stream_kwargs),
                     on_tool_call=mark_tool_call_requested,
                     on_text_delta=mark_text_emitted,
                     allow_tools=allow_tools,
@@ -531,7 +550,14 @@ async def _codex_input_from_chat_log(
     chat_log: conversation.ChatLog,
 ) -> list[dict[str, Any]]:
     input_items: list[dict[str, Any]] = []
-    for content in chat_log.content:
+    user_content_indices = [
+        index
+        for index, content in enumerate(chat_log.content)
+        if getattr(content, "role", None) == "user"
+    ]
+    image_history_indices = set(user_content_indices[-IMAGE_HISTORY_USER_TURNS:])
+
+    for index, content in enumerate(chat_log.content):
         role = getattr(content, "role", None)
         text = getattr(content, "content", None)
         if role == "system":
@@ -551,7 +577,7 @@ async def _codex_input_from_chat_log(
             continue
         if role in {"user", "assistant"} and isinstance(text, str) and text.strip():
             item_content: str | list[dict[str, Any]] = text
-            if role == "user":
+            if role == "user" and index in image_history_indices:
                 images = await _async_image_attachments_for_codex(
                     hass,
                     getattr(content, "attachments", None),
@@ -571,15 +597,32 @@ async def _codex_input_from_chat_log(
                     }
                 )
 
-    return _trim_codex_input_items(input_items, max_items=24)
+    return _trim_codex_input_items(
+        input_items,
+        max_items=MAX_CODEX_INPUT_ITEMS,
+        max_bytes=MAX_CODEX_HISTORY_BYTES,
+    )
+
+
+def _codex_input_size_bytes(input_items: list[dict[str, Any]]) -> int:
+    return len(
+        json.dumps(
+            input_items,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode()
+    )
 
 
 def _trim_codex_input_items(
     input_items: list[dict[str, Any]],
     *,
     max_items: int,
+    max_bytes: int | None = None,
 ) -> list[dict[str, Any]]:
-    if len(input_items) <= max_items:
+    if len(input_items) <= max_items and (
+        max_bytes is None or _codex_input_size_bytes(input_items) <= max_bytes
+    ):
         return input_items
 
     groups: list[list[dict[str, Any]]] = []
@@ -594,15 +637,25 @@ def _trim_codex_input_items(
 
     selected: list[list[dict[str, Any]]] = []
     selected_items = 0
+    selected_bytes = 2
     for group in reversed(groups):
         if not selected and len(group) > max_items:
             raise ValueError(
                 f"Current Codex turn contains {len(group)} items; maximum is {max_items}"
             )
-        if selected and selected_items + len(group) > max_items:
+        group_bytes = _codex_input_size_bytes(group) - 2
+        separator_bytes = 1 if selected_items else 0
+        if selected and (
+            selected_items + len(group) > max_items
+            or (
+                max_bytes is not None
+                and selected_bytes + separator_bytes + group_bytes > max_bytes
+            )
+        ):
             break
         selected.append(group)
         selected_items += len(group)
+        selected_bytes += separator_bytes + group_bytes
     return [item for group in reversed(selected) for item in group]
 
 

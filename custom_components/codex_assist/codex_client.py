@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import copy
 import json
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -24,6 +25,7 @@ CODEX_STREAM_TIMEOUT = httpx.Timeout(
     write=DEFAULT_STREAM_WRITE_TIMEOUT,
     pool=DEFAULT_STREAM_POOL_TIMEOUT,
 )
+LOGGER = logging.getLogger(__name__)
 
 
 class AsyncPostClient(Protocol):
@@ -57,6 +59,17 @@ class CodexImageResult:
     mime_type: str
     model: str
     revised_prompt: str | None = None
+
+
+@dataclass(frozen=True)
+class CodexUsage:
+    input_tokens: int
+    cached_input_tokens: int
+    cache_write_input_tokens: int
+    output_tokens: int
+    reasoning_output_tokens: int
+    total_tokens: int
+    rollout_budget_units: int | float | None = None
 
 
 @dataclass(frozen=True)
@@ -172,6 +185,7 @@ class CodexClient:
         reasoning_summary: str | None = None,
         text_verbosity: str | None = None,
         text_format: dict[str, Any] | None = None,
+        prompt_cache_key: str | None = None,
     ) -> AsyncIterator[CodexStreamDelta]:
         payload = _responses_payload(
             model=model,
@@ -182,6 +196,7 @@ class CodexClient:
             reasoning_summary=reasoning_summary,
             text_verbosity=text_verbosity,
             text_format=text_format,
+            prompt_cache_key=prompt_cache_key,
         )
 
         async with self._http_client.stream(
@@ -208,6 +223,8 @@ class CodexClient:
             anonymous_call_index = 0
             async for event in _aiter_sse_events(response):
                 event_type = event.get("type")
+                if usage := _usage_from_event(event):
+                    _log_usage("turn", usage)
                 for citation in _citations_from_event(event):
                     yield CodexCitationDelta(citation)
                 if event_type == "response.output_item.added":
@@ -293,6 +310,8 @@ class CodexClient:
                 )
 
             async for event in _aiter_sse_events(response):
+                if usage := _usage_from_event(event):
+                    _log_usage("image", usage)
                 found = _extract_image_b64(event)
                 if found:
                     image_b64 = found
@@ -326,6 +345,7 @@ def _responses_payload(
     reasoning_summary: str | None = None,
     text_verbosity: str | None = None,
     text_format: dict[str, Any] | None = None,
+    prompt_cache_key: str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": model,
@@ -334,6 +354,8 @@ def _responses_payload(
         "store": False,
         "stream": True,
     }
+    if prompt_cache_key:
+        payload["prompt_cache_key"] = prompt_cache_key
     if tools:
         payload["tools"] = tools
     include: list[str] = []
@@ -513,6 +535,56 @@ def _is_rate_limit_response(status_code: int, error: CodexResponseError) -> bool
 class CodexResponseError:
     detail: str
     code: str | None = None
+
+
+def _usage_from_event(event: dict[str, Any]) -> CodexUsage | None:
+    if event.get("type") != "response.completed":
+        return None
+    response = event.get("response")
+    usage = response.get("usage") if isinstance(response, dict) else None
+    if not isinstance(usage, dict):
+        return None
+    input_details = usage.get("input_tokens_details")
+    if not isinstance(input_details, dict):
+        input_details = {}
+    output_details = usage.get("output_tokens_details")
+    if not isinstance(output_details, dict):
+        output_details = {}
+    rollout_budget_units = usage.get("codex_rollout_budget_units")
+    if isinstance(rollout_budget_units, bool) or not isinstance(
+        rollout_budget_units, (int, float)
+    ):
+        rollout_budget_units = None
+    return CodexUsage(
+        input_tokens=_nonnegative_int(usage.get("input_tokens")),
+        cached_input_tokens=_nonnegative_int(input_details.get("cached_tokens")),
+        cache_write_input_tokens=_nonnegative_int(input_details.get("cache_write_tokens")),
+        output_tokens=_nonnegative_int(usage.get("output_tokens")),
+        reasoning_output_tokens=_nonnegative_int(output_details.get("reasoning_tokens")),
+        total_tokens=_nonnegative_int(usage.get("total_tokens")),
+        rollout_budget_units=rollout_budget_units,
+    )
+
+
+def _nonnegative_int(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _log_usage(operation: str, usage: CodexUsage) -> None:
+    LOGGER.debug(
+        (
+            "Codex %s usage input=%d cached=%d cache_write=%d output=%d "
+            "reasoning=%d total=%d rollout_budget=%s"
+        ),
+        operation,
+        usage.input_tokens,
+        usage.cached_input_tokens,
+        usage.cache_write_input_tokens,
+        usage.output_tokens,
+        usage.reasoning_output_tokens,
+        usage.total_tokens,
+        usage.rollout_budget_units,
+    )
 
 
 def _function_call_item_key(
