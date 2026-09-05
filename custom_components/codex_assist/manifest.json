@@ -2,7 +2,7 @@
   "domain": "codex_assist",
   "name": "Codex Assist",
   "after_dependencies": ["ai_task", "conversation"],
-  "codeowners": ["@itsreverence"],
+  "codeowners": ["@Maeriberii"],
   "config_flow": true,
   "documentation": "https://github.com/Maeriberii/ha-codex-assist",
   "iot_class": "cloud_polling",

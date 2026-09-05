@@ -23,6 +23,13 @@ Build a public-quality Home Assistant custom integration backed by OpenAI Codex 
 - Use [docs/RELEASING.md](docs/RELEASING.md) for versioning, release checks, and public artifact verification.
 - Update the README and wiki when setup, options, compatibility, screenshots, or user-visible behavior changes.
 
+## Git workflow
+
+- Commit proactively after each substantial, coherent change instead of accumulating unrelated edits.
+- Keep each commit narrowly scoped and use a clear normal commit message; no special AI-generated prefix is required.
+- Inspect the diff and status before committing so unrelated user changes are not swept into the commit.
+- Do not rewrite shared history, amend existing commits, or force-push unless explicitly requested.
+
 ## Verification
 
 - Run `uv run ruff check .` and `uv run pytest -q` before public-quality handoff.
