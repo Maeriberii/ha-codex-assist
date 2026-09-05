@@ -3,13 +3,7 @@
     "step": {
       "user": {
         "title": "Codex Assist",
-        "description": "Choose the default chat model. Setup will then show a Codex sign-in code for your ChatGPT/Codex account.",
-        "data": {
-          "model": "Chat model"
-        },
-        "data_description": {
-          "model": "The model used for Assist conversations and AI Task requests."
-        }
+        "description": "Sign in with your ChatGPT/Codex account first. You will choose a chat model from your account’s model list after signing in."
       },
       "device": {
         "title": "Sign in with Codex",
@@ -22,6 +16,13 @@
       "reconfigure": {
         "title": "Reconfigure Codex Assist",
         "description": "Sign in again with your ChatGPT/Codex account. Your Codex Assist options will stay unchanged."
+      },
+      "model": {
+        "title": "Choose a chat model",
+        "description": "{model_status} Select the model used for Assist conversations and AI Task requests. Availability and feature support can vary by account.",
+        "data": {
+          "model": "Chat model"
+        }
       }
     },
     "abort": {
@@ -32,14 +33,16 @@
     "error": {
       "authorization_pending": "That code has not been approved yet. Finish signing in in your browser, wait a few seconds, then continue again.",
       "device_code_auth_failed": "Codex sign-in failed. Restart setup and try again.",
-      "device_code_request_failed": "Could not request a Codex device code. Check network access from Home Assistant and try again."
+      "device_code_request_failed": "Could not request a Codex device code. Check network access from Home Assistant and try again.",
+      "invalid_model": "Choose a model from the displayed list.",
+      "no_models": "Your account returned no visible models. Try again later or restart setup with another account."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Codex Assist options",
-        "description": "Start with the everyday settings. Advanced chat and image-generation defaults stay collapsed until you need them. Device control still follows Home Assistant's Assist exposed-entity settings.",
+        "description": "{model_status}\n\nStart with the everyday settings. Advanced chat and image-generation defaults stay collapsed until you need them. Device control still follows Home Assistant’s Assist exposed-entity settings.",
         "sections": {
           "chat_settings": {
             "name": "Everyday settings",
@@ -78,6 +81,9 @@
           }
         }
       }
+    },
+    "error": {
+      "invalid_model": "Choose a listed model or keep your saved model."
     }
   }
 }

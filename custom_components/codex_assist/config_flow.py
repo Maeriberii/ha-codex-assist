@@ -21,7 +21,8 @@ from .codex_image import (
     IMAGE_MODEL_QUALITY,
     IMAGE_SIZE_OPTIONS,
 )
-from .codex_models import DEFAULT_CODEX_MODELS, fetch_codex_model_ids
+from .codex_models import ModelCatalog, ModelDiscoveryCache, fetch_codex_model_ids
+from .model_discovery import async_entry_model_catalog
 
 CONF_ACCESS_TOKEN = "access_token"
 CONF_PROMPT = "prompt"
@@ -36,7 +37,6 @@ CONF_WEB_SEARCH = "web_search"
 SECTION_CHAT_SETTINGS = "chat_settings"
 SECTION_ADVANCED_SETTINGS = "advanced_settings"
 SECTION_IMAGE_SETTINGS = "image_settings"
-DEFAULT_MODEL = "gpt-5.4"
 DEFAULT_PROMPT = "You are a concise Home Assistant Assist conversation agent."
 DEFAULT_REASONING_EFFORT = "low"
 DEFAULT_REASONING_SUMMARY = "auto"
@@ -57,10 +57,13 @@ class CodexAssistConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         self._setup_input: dict[str, Any] = {}
         self._device_code: CodexDeviceCode | None = None
+        self._setup_data: dict[str, Any] = {}
+        self._model_cache = ModelDiscoveryCache()
+        self._catalog: ModelCatalog | None = None
 
     async def async_step_user(self, user_input=None):
         if user_input is not None:
-            self._setup_input = dict(user_input)
+            self._setup_input = {}
             try:
                 self._device_code = await self._auth_client().request_device_code()
             except RuntimeError:
@@ -101,11 +104,13 @@ class CodexAssistConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "refresh_token": tokens.refresh_token,
         }
         if self.source == config_entries.SOURCE_REAUTH:
+            _clear_model_cache(self._get_reauth_entry())
             return self.async_update_reload_and_abort(
                 self._get_reauth_entry(),
                 data_updates=data,
             )
         if self.source == config_entries.SOURCE_RECONFIGURE:
+            _clear_model_cache(self._get_reconfigure_entry())
             return self.async_update_reload_and_abort(
                 self._get_reconfigure_entry(),
                 data_updates=data,
@@ -113,7 +118,34 @@ class CodexAssistConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         await self.async_set_unique_id(DOMAIN)
         self._abort_if_unique_id_configured()
-        return self.async_create_entry(title="Codex Assist", data=data)
+        self._setup_data = data
+        return await self.async_step_model()
+
+    async def async_step_model(self, user_input=None):
+        errors = {}
+        if user_input is not None and self._catalog and self._catalog.models:
+            model = user_input.get(CONF_MODEL)
+            if model in self._catalog.models:
+                return self.async_create_entry(
+                    title="Codex Assist", data={**self._setup_data, CONF_MODEL: model}
+                )
+            errors["base"] = "invalid_model"
+        if self._catalog is None or not self._catalog.models:
+            self._catalog = await self._model_cache.async_get(
+                lambda: fetch_codex_model_ids(
+                    http_client=get_async_client(self.hass),
+                    access_token=self._setup_data.get(CONF_ACCESS_TOKEN),
+                ),
+                force=True,
+            )
+        if not self._catalog.models:
+            errors["base"] = "no_models"
+        return self.async_show_form(
+            step_id="model",
+            data_schema=_model_schema({}, model_options=list(self._catalog.models)),
+            errors=errors,
+            description_placeholders={"model_status": _catalog_description(self._catalog)},
+        )
 
     async def async_step_reconfigure(self, user_input=None):
         if user_input is not None:
@@ -180,25 +212,49 @@ class CodexAssistConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 def _user_schema() -> vol.Schema:
-    return _model_schema({}, model_options=DEFAULT_CODEX_MODELS)
+    return vol.Schema({})
+
+
+def _clear_model_cache(entry) -> None:
+    coordinator = getattr(entry, "runtime_data", None)
+    if coordinator is not None and hasattr(coordinator, "model_cache"):
+        coordinator.model_cache.clear()
 
 
 class CodexAssistOptionsFlow(config_entries.OptionsFlow):
+    def __init__(self) -> None:
+        self._catalog: ModelCatalog | None = None
+
     async def async_step_init(self, user_input=None):
         defaults = {**self.config_entry.data, **self.config_entry.options}
+        errors = {}
         if user_input is not None:
             data = _flatten_settings_input(user_input)
-            if CONF_REASONING_SUMMARY in defaults:
-                data[CONF_REASONING_SUMMARY] = defaults[CONF_REASONING_SUMMARY]
-            return self.async_create_entry(title="", data=data)
+            model = data.get(CONF_MODEL, defaults.get(CONF_MODEL))
+            if (
+                self._catalog is not None
+                and model not in self._catalog.models
+                and model != defaults.get(CONF_MODEL)
+            ):
+                errors["base"] = "invalid_model"
+            else:
+                if model is not None:
+                    data[CONF_MODEL] = model
+                if CONF_REASONING_SUMMARY in defaults:
+                    data[CONF_REASONING_SUMMARY] = defaults[CONF_REASONING_SUMMARY]
+                return self.async_create_entry(title="", data=data)
 
-        model_options = await fetch_codex_model_ids(
-            http_client=get_async_client(self.hass),
-            access_token=self.config_entry.data.get(CONF_ACCESS_TOKEN),
-        )
+        if self._catalog is None:
+            self._catalog = await async_entry_model_catalog(
+                self.hass, self.config_entry, force=True
+            )
         return self.async_show_form(
             step_id="init",
-            data_schema=_settings_schema(defaults, model_options=model_options),
+            data_schema=_settings_schema(defaults, model_options=list(self._catalog.models)),
+            errors=errors,
+            description_placeholders={
+                "model_status": _catalog_description(self._catalog, defaults.get(CONF_MODEL))
+            },
         )
 
 
@@ -207,10 +263,9 @@ def _settings_schema(
     *,
     model_options: list[str],
 ) -> vol.Schema:
-    model_options = list(dict.fromkeys([*model_options, DEFAULT_MODEL]))
-    model_default = defaults.get(CONF_MODEL, DEFAULT_MODEL)
-    if model_default not in model_options:
-        model_default = DEFAULT_MODEL
+    model_options = list(dict.fromkeys(model_options))
+    saved_model = defaults.get(CONF_MODEL)
+    model_default = saved_model or next(iter(model_options), None)
     image_model_default = defaults.get(CONF_IMAGE_MODEL, DEFAULT_IMAGE_MODEL)
     if image_model_default not in IMAGE_MODEL_QUALITY:
         image_model_default = DEFAULT_IMAGE_MODEL
@@ -223,14 +278,18 @@ def _settings_schema(
             vol.Required(SECTION_CHAT_SETTINGS): section(
                 vol.Schema(
                     {
-                        vol.Optional(CONF_MODEL, default=model_default): _model_selector(
-                            model_options
+                        **(
+                            {
+                                vol.Optional(CONF_MODEL, default=model_default): _model_selector(
+                                    model_options, saved_model=saved_model
+                                )
+                            }
+                            if model_default is not None
+                            else {}
                         ),
                         vol.Optional(
                             CONF_TEXT_VERBOSITY,
-                            default=defaults.get(
-                                CONF_TEXT_VERBOSITY, DEFAULT_TEXT_VERBOSITY
-                            ),
+                            default=defaults.get(CONF_TEXT_VERBOSITY, DEFAULT_TEXT_VERBOSITY),
                         ): _low_medium_high_selector(),
                         vol.Optional(
                             CONF_WEB_SEARCH,
@@ -246,14 +305,10 @@ def _settings_schema(
                         vol.Optional(
                             CONF_PROMPT,
                             default=defaults.get(CONF_PROMPT, DEFAULT_PROMPT),
-                        ): selector.TextSelector(
-                            selector.TextSelectorConfig(multiline=True)
-                        ),
+                        ): selector.TextSelector(selector.TextSelectorConfig(multiline=True)),
                         vol.Optional(
                             CONF_REASONING_EFFORT,
-                            default=defaults.get(
-                                CONF_REASONING_EFFORT, DEFAULT_REASONING_EFFORT
-                            ),
+                            default=defaults.get(CONF_REASONING_EFFORT, DEFAULT_REASONING_EFFORT),
                         ): _low_medium_high_selector(),
                     }
                 ),
@@ -278,19 +333,18 @@ def _settings_schema(
     )
 
 
-def _model_schema(
-    defaults: dict[str, Any], *, model_options: list[str]
-) -> vol.Schema:
-    model_options = list(dict.fromkeys([*model_options, DEFAULT_MODEL]))
-    model_default = defaults.get(CONF_MODEL, DEFAULT_MODEL)
-    if model_default not in model_options:
-        model_default = DEFAULT_MODEL
+def _model_schema(defaults: dict[str, Any], *, model_options: list[str]) -> vol.Schema:
+    model_options = list(dict.fromkeys(model_options))
+    saved_model = defaults.get(CONF_MODEL)
+    model_default = (
+        saved_model
+        if saved_model in model_options
+        else next(iter(model_options), None)
+    )
+    if not model_options:
+        return vol.Schema({})
     return vol.Schema(
-        {
-            vol.Optional(CONF_MODEL, default=model_default): _model_selector(
-                model_options
-            )
-        }
+        {vol.Optional(CONF_MODEL, default=model_default): _model_selector(model_options)}
     )
 
 
@@ -316,12 +370,19 @@ def _low_medium_high_selector() -> selector.SelectSelector:
     )
 
 
-def _model_selector(model_options: list[str]) -> selector.SelectSelector:
+def _model_selector(
+    model_options: list[str], *, saved_model: str | None = None
+) -> selector.SelectSelector:
+    options = [selector.SelectOptionDict(value=model, label=model) for model in model_options]
+    if saved_model and saved_model not in model_options:
+        options.append(
+            selector.SelectOptionDict(
+                value=saved_model, label=f"{saved_model} (saved; not currently listed)"
+            )
+        )
     return selector.SelectSelector(
         selector.SelectSelectorConfig(
-            options=[
-                selector.SelectOptionDict(value=model, label=model) for model in model_options
-            ],
+            options=options,
             mode=selector.SelectSelectorMode.DROPDOWN,
         )
     )
@@ -351,3 +412,23 @@ def _image_size_selector() -> selector.SelectSelector:
             mode=selector.SelectSelectorMode.DROPDOWN,
         )
     )
+
+
+def _catalog_description(catalog: ModelCatalog, saved_model: str | None = None) -> str:
+    if catalog.source == "fallback":
+        status = "Discovery is unavailable. Suggested models are unverified for this account."
+    elif not catalog.models:
+        status = "The account's model list contains no visible models."
+    elif catalog.source == "cached":
+        status = "Showing the last model list retrieved for this account during this session."
+    else:
+        status = "Models retrieved from your ChatGPT/Codex account."
+    if catalog.error == "authentication":
+        status += " Account discovery requires a fresh sign-in."
+    elif catalog.error and catalog.source == "cached":
+        status += " Refresh failed; the cached list may be outdated."
+    if saved_model and saved_model not in catalog.models:
+        status += (
+            " Your saved model is not in this list; it is kept until you choose a replacement."
+        )
+    return status

@@ -17,7 +17,7 @@ from homeassistant.components import conversation
 from homeassistant.components.conversation import trace as conversation_trace
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import Context, HomeAssistant
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from homeassistant.helpers import llm, selector
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -142,9 +142,7 @@ async def test_conversation_replays_native_codex_output_on_next_turn(
         "type": "message",
         "role": "assistant",
         "phase": "final_answer",
-        "content": [
-            {"type": "output_text", "text": "First reply.", "annotations": []}
-        ],
+        "content": [{"type": "output_text", "text": "First reply.", "annotations": []}],
     }
     calls: list[list[dict[str, object]]] = []
 
@@ -331,11 +329,13 @@ async def test_options_flow_uses_real_home_assistant_contract(
 ) -> None:
     entry = await _setup_entry(hass)
 
-    async def fake_model_ids(**kwargs: object) -> list[str]:
-        return ["gpt-5.4"]
+    from custom_components.codex_assist.codex_models import ModelCatalog
+
+    async def fake_model_ids(*args, **kwargs):
+        return ModelCatalog(("gpt-5.4",), "discovered")
 
     monkeypatch.setattr(
-        "custom_components.codex_assist.config_flow.fetch_codex_model_ids",
+        "custom_components.codex_assist.config_flow.async_entry_model_catalog",
         fake_model_ids,
     )
 
@@ -353,9 +353,7 @@ async def test_options_flow_uses_real_home_assistant_contract(
         if key.schema == SECTION_ADVANCED_SETTINGS
     )
     prompt_selector = next(
-        value
-        for key, value in advanced_section.schema.schema.items()
-        if key.schema == CONF_PROMPT
+        value for key, value in advanced_section.schema.schema.items() if key.schema == CONF_PROMPT
     )
     assert isinstance(prompt_selector, selector.TextSelector)
     assert prompt_selector.config["multiline"] is True
@@ -464,17 +462,15 @@ def test_structured_output_preserves_composition_and_nullable_semantics() -> Non
 
 
 def test_structured_output_restores_composed_key_placeholders() -> None:
-    structure = vol.Schema(
-        {vol.Required(vol.Any("email", "phone")): str}
-    )
+    structure = vol.Schema({vol.Required(vol.Any("email", "phone")): str})
     task = SimpleNamespace(name="Contact output", structure=structure)
 
     text_format = _structured_output_format(task, SimpleNamespace(llm_api=None))
 
     assert text_format is not None
-    assert _structured_data_from_text(
-        '{"email":"person@example.com","phone":null}', structure
-    ) == {"email": "person@example.com"}
+    assert _structured_data_from_text('{"email":"person@example.com","phone":null}', structure) == {
+        "email": "person@example.com"
+    }
 
 
 def test_structured_output_restores_optional_defaults_inside_all() -> None:
@@ -495,6 +491,124 @@ def test_structured_output_restores_optional_defaults_inside_all() -> None:
     assert text_format is not None
     note_schema = text_format["schema"]["properties"]["payload"]["properties"]["note"]
     assert note_schema["type"] == ["string", "null"]
-    assert _structured_data_from_text(
-        '{"payload":{"name":"x","note":null}}', structure
-    ) == {"payload": {"name": "x", "note": "fallback"}}
+    assert _structured_data_from_text('{"payload":{"name":"x","note":null}}', structure) == {
+        "payload": {"name": "x", "note": "fallback"}
+    }
+
+
+async def test_new_setup_discovers_models_after_owned_sign_in(hass, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from custom_components.codex_assist.codex_auth import (
+        CodexAuthorizationCode,
+        CodexDeviceCode,
+        CodexTokenSet,
+    )
+
+    auth = SimpleNamespace(
+        request_device_code=AsyncMock(
+            return_value=CodexDeviceCode(
+                user_code="TEST-CODE",
+                device_auth_id="test-device",
+                interval=5,
+                verification_uri="https://auth.openai.com/codex/device",
+            )
+        ),
+        poll_device_code=AsyncMock(return_value=CodexAuthorizationCode("test-code", "verifier")),
+        exchange_authorization_code=AsyncMock(
+            return_value=CodexTokenSet("test-access", "test-refresh")
+        ),
+    )
+    monkeypatch.setattr(
+        "custom_components.codex_assist.config_flow.CodexAssistConfigFlow._auth_client",
+        lambda self: auth,
+    )
+    discover = AsyncMock(return_value=["future-model", "gpt-5.6-terra"])
+    monkeypatch.setattr(
+        "custom_components.codex_assist.config_flow.fetch_codex_model_ids", discover
+    )
+    result = await hass.config_entries.flow.async_init("codex_assist", context={"source": "user"})
+    assert result["step_id"] == "user"
+    assert not result["data_schema"].schema
+    discover.assert_not_awaited()
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input={})
+    assert result["step_id"] == "device"
+    discover.assert_not_awaited()
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input={})
+    assert result["step_id"] == "model"
+    model_field, model_selector = next(iter(result["data_schema"].schema.items()))
+    assert model_field.default() == "future-model"
+    assert [o["value"] for o in model_selector.config["options"]] == [
+        "future-model",
+        "gpt-5.6-terra",
+    ]
+    with pytest.raises(InvalidData):
+        await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={"model": "invented-model"}
+        )
+    monkeypatch.setattr(
+        "custom_components.codex_assist.async_setup_entry", AsyncMock(return_value=True)
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"model": "future-model"}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"]["model"] == "future-model"
+    await hass.async_block_till_done()
+
+
+async def test_options_preserves_saved_model_when_account_list_changes(hass, monkeypatch):
+    from custom_components.codex_assist.codex_models import ModelCatalog
+
+    entry = await _setup_entry(hass)
+
+    async def catalog(*args, **kwargs):
+        return ModelCatalog(("new-model",), "discovered")
+
+    monkeypatch.setattr(
+        "custom_components.codex_assist.config_flow.async_entry_model_catalog", catalog
+    )
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    section = next(
+        v for k, v in result["data_schema"].schema.items() if k.schema == SECTION_CHAT_SETTINGS
+    )
+    field, select = next((k, v) for k, v in section.schema.schema.items() if k.schema == "model")
+    assert field.default() == entry.data["model"]
+    assert select.config["options"][-1]["label"].endswith("(saved; not currently listed)")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={
+            SECTION_CHAT_SETTINGS: {"text_verbosity": "low"},
+            SECTION_ADVANCED_SETTINGS: {},
+            SECTION_IMAGE_SETTINGS: {},
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options["model"] == entry.data["model"]
+
+
+async def test_periodic_discovery_is_cancelled_when_entry_unloads(hass, monkeypatch):
+    from datetime import timedelta
+    from unittest.mock import AsyncMock, Mock
+
+    cancel = Mock()
+    callbacks = []
+
+    def track(hass_arg, callback, interval):
+        assert hass_arg is hass
+        assert interval == timedelta(hours=6)
+        callbacks.append(callback)
+        return cancel
+
+    refresh = AsyncMock()
+    monkeypatch.setattr("homeassistant.helpers.event.async_track_time_interval", track)
+    monkeypatch.setattr(
+        "custom_components.codex_assist.model_discovery.async_entry_model_catalog", refresh
+    )
+    entry = await _setup_entry(hass)
+    assert len(callbacks) == 1
+    refresh.assert_not_awaited()
+    await callbacks[0](None)
+    refresh.assert_awaited_once_with(hass, entry)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    cancel.assert_called_once()

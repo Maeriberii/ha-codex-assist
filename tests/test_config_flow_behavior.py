@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import types
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -44,7 +45,9 @@ class FakeAuthClient:
 def config_flow_module(monkeypatch):
     install_homeassistant_fakes(monkeypatch)
     module = importlib.import_module("custom_components.codex_assist.config_flow")
-    return importlib.reload(module)
+    module = importlib.reload(module)
+    monkeypatch.setattr(module, "fetch_codex_model_ids", AsyncMock(return_value=["account-model"]))
+    return module
 
 
 @pytest.mark.asyncio
@@ -80,7 +83,11 @@ async def test_config_flow_creates_entry_only_after_device_token_exchange(
     flow._device_code = auth.device_code
     flow.source = "user"
 
+    flow.hass = object()
     result = await flow.async_step_device_wait()
+    assert result["step_id"] == "model"
+    assert not result.get("data")
+    result = await flow.async_step_model({"model": "account-model"})
 
     assert auth.polls == [("device-1", "ABCD-EFGH")]
     assert auth.exchanges == [CodexAuthorizationCode("auth-code-1", "verifier-1")]
@@ -90,7 +97,7 @@ async def test_config_flow_creates_entry_only_after_device_token_exchange(
         "type": "create_entry",
         "title": "Codex Assist",
         "data": {
-            "model": "gpt-5.4",
+            "model": "account-model",
             "access_token": "access-1",
             "refresh_token": "refresh-1",
         },
@@ -146,10 +153,7 @@ def _schema_defaults(data_schema) -> dict[str, object]:
 
 
 def _section_defaults(data_schema, section_name) -> dict[str, object]:
-    sections = {
-        field.key: validator
-        for field, validator in data_schema.schema.items()
-    }
+    sections = {field.key: validator for field, validator in data_schema.schema.items()}
     return _schema_defaults(sections[section_name].schema)
 
 
@@ -238,3 +242,67 @@ async def test_reconfigure_device_code_request_failure_shows_error(config_flow_m
     assert result["step_id"] == "reconfigure"
     assert result["errors"] == {"base": "device_code_request_failed"}
     assert _schema_defaults(result["data_schema"]) == {}
+
+
+async def test_model_step_rejects_an_unadvertised_model(config_flow_module):
+    flow = config_flow_module.CodexAssistConfigFlow()
+    flow.hass = object()
+    flow._setup_data = {"access_token": "access-1", "refresh_token": "refresh-1"}
+    await flow.async_step_model()
+    result = await flow.async_step_model({"model": "guessed-model"})
+    assert result["type"] == "form"
+    assert result["errors"] == {"base": "invalid_model"}
+
+
+async def test_model_step_empty_success_does_not_create_entry(config_flow_module, monkeypatch):
+    monkeypatch.setattr(config_flow_module, "fetch_codex_model_ids", AsyncMock(return_value=[]))
+    flow = config_flow_module.CodexAssistConfigFlow()
+    flow.hass = object()
+    flow._setup_data = {"access_token": "access-1"}
+    result = await flow.async_step_model()
+    assert result["errors"] == {"base": "no_models"}
+    assert not result["data_schema"].schema
+    result = await flow.async_step_model({})
+    assert result["type"] == "form"
+
+
+async def test_model_step_labels_fallback_on_discovery_failure(config_flow_module, monkeypatch):
+    from custom_components.codex_assist.codex_models import ModelDiscoveryError
+
+    monkeypatch.setattr(
+        config_flow_module, "fetch_codex_model_ids", AsyncMock(side_effect=ModelDiscoveryError())
+    )
+    flow = config_flow_module.CodexAssistConfigFlow()
+    flow.hass = object()
+    flow._setup_data = {"access_token": "access-1"}
+    result = await flow.async_step_model()
+    assert "unverified" in result["description_placeholders"]["model_status"]
+    saved = await flow.async_step_model({"model": _schema_defaults(result["data_schema"])["model"]})
+    assert saved["type"] == "create_entry"
+
+
+async def test_reauthentication_clears_previous_accounts_discovery_cache(config_flow_module):
+    from custom_components.codex_assist.codex_runtime import RuntimeTokenCoordinator
+
+    entry = _reconfigure_entry(runtime_data=RuntimeTokenCoordinator())
+    cache = entry.runtime_data.model_cache
+
+    async def old_models():
+        return ["old-account-model"]
+
+    await cache.async_get(old_models)
+    flow = config_flow_module.CodexAssistConfigFlow()
+    auth = FakeAuthClient()
+    flow._auth_client = lambda: auth
+    flow._device_code = auth.device_code
+    flow.source = "reauth"
+    flow.reauth_entry = entry
+    await flow.async_step_device_wait()
+    called = []
+
+    async def new_models():
+        called.append(True)
+        return ["new-account-model"]
+
+    assert (await cache.async_get(new_models)).models == ("new-account-model",)
+    assert called
