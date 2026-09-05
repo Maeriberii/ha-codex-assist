@@ -376,7 +376,7 @@ def _settings_schema(
                 ),
                 {"collapsed": True},
             ),
-            vol.Required(SECTION_RUNTIME_ORCHESTRATION): section(
+            vol.Optional(SECTION_RUNTIME_ORCHESTRATION): section(
                 vol.Schema({
                     vol.Optional(spec.key, default=defaults.get(spec.key, spec.default)):
                         _number_selector(spec)
