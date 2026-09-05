@@ -41,6 +41,7 @@ from custom_components.codex_assist.config_flow import (
     SECTION_ADVANCED_SETTINGS,
     SECTION_CHAT_SETTINGS,
     SECTION_IMAGE_SETTINGS,
+    SECTION_RUNTIME_ORCHESTRATION,
 )
 from custom_components.codex_assist.diagnostics import (
     REDACTED,
@@ -346,6 +347,7 @@ async def test_options_flow_uses_real_home_assistant_contract(
         SECTION_CHAT_SETTINGS,
         SECTION_ADVANCED_SETTINGS,
         SECTION_IMAGE_SETTINGS,
+        SECTION_RUNTIME_ORCHESTRATION,
     ]
     advanced_section = next(
         value
