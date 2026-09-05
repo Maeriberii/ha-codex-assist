@@ -126,7 +126,7 @@ class CodexAssistConversationEntity(
         )
         citations: list[CodexCitation] = []
         prompt_cache_key = _conversation_prompt_cache_key(
-            self.entry.entry_id, chat_log.conversation_id
+            self.entry.entry_id, user_input.conversation_id or chat_log.conversation_id
         )
 
         response = intent.IntentResponse(language=user_input.language)
@@ -358,20 +358,22 @@ async def _stream_codex_turn_into_chat_log(
 
     for attempt in range(2):
         try:
+            stream_kwargs: dict[str, Any] = {
+                "model": model,
+                "instructions": instructions,
+                "input_items": input_items,
+                "tools": tools,
+                "reasoning_effort": reasoning_effort,
+                "reasoning_summary": reasoning_summary,
+                "text_verbosity": text_verbosity,
+                "text_format": text_format,
+            }
+            if prompt_cache_key is not None:
+                stream_kwargs["prompt_cache_key"] = prompt_cache_key
             async for _delta in chat_log.async_add_delta_content_stream(
                 entity_id,
                 _codex_stream_to_assistant_deltas(
-                    codex.stream_turn(
-                        model=model,
-                        instructions=instructions,
-                        input_items=input_items,
-                        tools=tools,
-                        reasoning_effort=reasoning_effort,
-                        reasoning_summary=reasoning_summary,
-                        text_verbosity=text_verbosity,
-                        text_format=text_format,
-                        prompt_cache_key=prompt_cache_key,
-                    ),
+                    codex.stream_turn(**stream_kwargs),
                     on_tool_call=mark_tool_call_requested,
                     on_text_delta=mark_text_emitted,
                     allow_tools=allow_tools,
@@ -635,7 +637,7 @@ def _trim_codex_input_items(
 
     selected: list[list[dict[str, Any]]] = []
     selected_items = 0
-    selected_bytes = 2  # JSON array brackets.
+    selected_bytes = 2
     for group in reversed(groups):
         if not selected and len(group) > max_items:
             raise ValueError(
