@@ -19,7 +19,7 @@ uv run ruff check .
 uv run pytest -q
 ```
 
-The fast suite under `tests/` uses lightweight Home Assistant fakes. Run both real Home Assistant contract environments in isolated Python 3.14 environments so they do not reuse the project's normal environment:
+The fast suite under `tests/` uses lightweight Home Assistant fakes. Run the real Home Assistant contract environments in isolated Python 3.14 environments so they do not reuse the project's normal environment:
 
 ```bash
 uv run --isolated --python 3.14 --with-requirements requirements_test_ha_min.txt \
@@ -27,6 +27,9 @@ uv run --isolated --python 3.14 --with-requirements requirements_test_ha_min.txt
 uv run --isolated --python 3.14 --with-requirements requirements_test_ha.txt \
   python -m pytest tests_ha -q
 ```
+
+Also run the previous-version and mixed-library checks in [docs/TESTING.md](docs/TESTING.md)
+when changing schema conversion or dependency support.
 
 ## Pull requests
 

@@ -244,6 +244,7 @@ def install_homeassistant_fakes(monkeypatch):
     voluptuous_openapi.convert = lambda schema, custom_serializer=None: getattr(
         schema, "schema", schema
     )
+    llm.convert = voluptuous_openapi.convert
     vol.Invalid = Invalid
     vol.Any = Any  # type: ignore[attr-defined]
     vol.All = All  # type: ignore[attr-defined]

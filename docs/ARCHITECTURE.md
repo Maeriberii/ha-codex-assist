@@ -58,6 +58,15 @@ For stateless multi-turn requests, Codex Assist keeps completed provider output 
 
 Normal Assist conversation surfaces may not expose an upload button even though Home Assistant chat-log objects can carry attachments internally. Use AI Task surfaces that advertise attachment support when testing native attachments.
 
+## Schema conversion compatibility
+
+Assist tool parameters and structured AI Task output use the converter exposed
+by Home Assistant's LLM helper. Home Assistant 2026.9 uses Probatio's
+`to_openapi`; older supported versions use `convert` from voluptuous-openapi.
+The converter must match the helper's serializer and unsupported-value sentinel,
+even when both libraries are installed. Home Assistant supplies the matching
+library; Codex Assist does not install a separate schema converter.
+
 ## Security boundary
 
 Codex or ChatGPT may suggest an action, but Home Assistant remains the execution boundary. Device control goes through Home Assistant's Assist LLM API and is limited to entities exposed to Assist.

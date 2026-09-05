@@ -19,10 +19,26 @@ uv run --isolated --python 3.14 --with-requirements requirements_test_ha_min.txt
 ```
 
 CI runs the fast suite plus pinned real-Home-Assistant contract lanes against
-Home Assistant 2026.9.0 and Home Assistant 2026.6.0, the minimum supported
-version. Update the stable pins in `requirements_test_ha.txt` together when
-advancing that contract. Both lanes also run weekly to catch regressions without
+Home Assistant 2026.9.0, Home Assistant 2026.8.3 (before the schema converter
+transition), and Home Assistant 2026.6.0, the minimum supported version. Update the stable pins in `requirements_test_ha.txt` together when
+advancing that contract. All lanes also run weekly to catch regressions without
 silently resolving a prerelease or a newly incompatible test harness mid-run.
+
+The older lanes also run with `probatio==0.11.2` installed alongside
+`voluptuous-openapi`. This catches converter/serializer mismatches when both
+packages are available. Codex Assist selects the converter used by Home
+Assistant's LLM helper, rather than inferring it from installed packages.
+
+```bash
+uv run --isolated --python 3.14 --with-requirements requirements_test_ha_previous.txt \
+  python -m pytest tests_ha -q
+
+uv run --isolated --python 3.14 --with-requirements requirements_test_ha_min.txt \
+  --with probatio==0.11.2 python -m pytest tests_ha -q
+
+uv run --isolated --python 3.14 --with-requirements requirements_test_ha_previous.txt \
+  --with probatio==0.11.2 python -m pytest tests_ha -q
+```
 
 ## Hosted-search compatibility
 
