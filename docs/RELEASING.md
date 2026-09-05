@@ -4,7 +4,7 @@ This checklist is for maintainers.
 
 ## Prepare
 
-1. Update the version in `custom_components/codex_assist/manifest.json` and `pyproject.toml`, then refresh `uv.lock`.
+1. Update the version in `custom_components/codex_assist/manifest.json` and `pyproject.toml`, then refresh `uv.lock`. Use the PEP 440-compatible `<upstream>+maeriberii.<patch>` form (for example `0.4.5+maeriberii.1`) and tag the same value with a leading `v`.
 2. Confirm those `X.Y.Z` values match the planned `vX.Y.Z` tag.
 3. Review README, wiki, security, support, and compatibility guidance.
 4. Verify brand assets and screenshots contain no private data. For PNG icons, confirm the corner alpha is transparent:

@@ -5,8 +5,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/itsreverence/ha-codex-assist/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/itsreverence/ha-codex-assist?style=for-the-badge"></a>
-  <a href="https://github.com/itsreverence/ha-codex-assist/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/itsreverence/ha-codex-assist/ci.yml?branch=main&style=for-the-badge&label=CI"></a>
+  <a href="https://github.com/Maeriberii/ha-codex-assist/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/Maeriberii/ha-codex-assist?style=for-the-badge"></a>
+  <a href="https://github.com/Maeriberii/ha-codex-assist/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Maeriberii/ha-codex-assist/ci.yml?branch=main&style=for-the-badge&label=CI"></a>
   <a href="https://www.hacs.xyz/docs/use/repositories/dashboard/"><img alt="Available in HACS" src="https://img.shields.io/badge/HACS-Default-41BDF5?style=for-the-badge"></a>
 </p>
 
@@ -20,7 +20,7 @@ Codex Assist signs in with Codex-style ChatGPT device-code auth. It keeps device
 
 Requirements: Home Assistant `2026.6.0` or newer, HACS, and a ChatGPT account or plan with Codex access.
 
-[![Open HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=itsreverence&repository=ha-codex-assist&category=integration)
+[![Open HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Maeriberii&repository=ha-codex-assist&category=integration)
 [![Add the Codex Assist integration](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=codex_assist)
 
 1. In Home Assistant, open **HACS → Integrations**.
@@ -32,7 +32,19 @@ Requirements: Home Assistant `2026.6.0` or newer, HACS, and a ChatGPT account or
 7. Select **Codex Assist** in your Assist pipeline.
 8. Test with a harmless exposed entity first, such as a single light.
 
-Codex Assist is included in HACS by default. You do not need to add this repository as a custom repository. If it does not appear immediately after a release or catalog change, refresh HACS data and try again later.
+This downstream fork is installed as a custom HACS repository. Add
+`Maeriberii/ha-codex-assist` under **Integration** if HACS is currently
+tracking upstream.
+
+### One-time resynchronization transition
+
+The previous downstream release is `0.6.0`; this resynchronized release is
+`0.4.5+maeriberii.1`, matching its upstream base. HACS compares release versions
+and will treat this as a downgrade, so it will not offer it as a normal update.
+Back up Home Assistant, then use HACS **Redownload** and choose the explicit
+release tag (or remove and re-add this custom repository) before restarting
+Home Assistant. Existing Codex Assist configuration entries and options are
+preserved; do not delete the integration entry.
 
 Home Assistant 2026.9 changed its schema converter. Codex Assist `0.4.4` fixes
 setup failures mentioning `voluptuous_openapi` and Assist errors mentioning
