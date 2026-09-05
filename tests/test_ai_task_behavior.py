@@ -188,7 +188,7 @@ def test_structured_output_format_preserves_optional_semantics_in_nested_schema(
     }
     monkeypatch.setattr(
         ai_task_module,
-        "convert",
+        "to_openapi",
         lambda structure, custom_serializer: converted_schema,
     )
     task = type("Task", (), {"name": "Home State", "structure": object()})()

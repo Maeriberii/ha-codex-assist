@@ -41,7 +41,7 @@ jobs:
         run: uv run ruff check .
 
   ha-smoke:
-    name: Home Assistant 2026.8 stable contract tests
+    name: Home Assistant 2026.9 stable contract tests
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -74,6 +74,36 @@ jobs:
         run: pip install -r requirements_test_ha_min.txt
 
       - name: Run contract tests against minimum Home Assistant
+        run: python -m pytest tests_ha -q
+
+      - name: Install Probatio alongside the legacy converter
+        run: pip install probatio==0.11.2
+
+      - name: Verify minimum Home Assistant with both converters installed
+        run: python -m pytest tests_ha -q
+
+  ha-previous:
+    name: Home Assistant 2026.8 contract tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install previous Home Assistant test environment
+        run: pip install -r requirements_test_ha_previous.txt
+
+      - name: Verify previous Home Assistant
+        run: python -m pytest tests_ha -q
+
+      - name: Install Probatio alongside the legacy converter
+        run: pip install probatio==0.11.2
+
+      - name: Verify previous Home Assistant with both converters installed
         run: python -m pytest tests_ha -q
 
   hassfest:

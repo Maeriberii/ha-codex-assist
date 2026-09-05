@@ -34,6 +34,11 @@ Requirements: Home Assistant `2026.6.0` or newer, HACS, and a ChatGPT account or
 
 Codex Assist is included in HACS by default. You do not need to add this repository as a custom repository. If it does not appear immediately after a release or catalog change, refresh HACS data and try again later.
 
+Home Assistant 2026.9 changed its schema converter. Codex Assist `0.4.4` fixes
+setup failures mentioning `voluptuous_openapi` and Assist errors mentioning
+`_Unsupported`. Update Codex Assist and restart Home Assistant; existing sign-in
+and settings can be kept. See [Troubleshooting](https://github.com/itsreverence/ha-codex-assist/wiki/Troubleshooting).
+
 ## What it does
 
 ### Assist conversations
