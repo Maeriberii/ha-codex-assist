@@ -5,7 +5,7 @@ This checklist is for maintainers.
 ## Prepare
 
 1. Update the version in `custom_components/codex_assist/manifest.json` and `pyproject.toml`, then refresh `uv.lock`. Use the PEP 440-compatible `<upstream>+maeriberii.<patch>` form (for example `0.4.5+maeriberii.1`) and tag the same value with a leading `v`.
-2. Confirm those `X.Y.Z` values match the planned `vX.Y.Z` tag.
+2. Confirm the manifest, project metadata, and lockfile all carry the same downstream version and that it matches the planned `v<upstream>+maeriberii.<patch>` tag.
 3. Review README, wiki, security, support, and compatibility guidance.
 4. Verify brand assets and screenshots contain no private data. For PNG icons, confirm the corner alpha is transparent:
 
@@ -31,11 +31,14 @@ This checklist is for maintainers.
 
 ## Publish
 
+Set `VERSION` to the exact downstream version already present in the manifest and project metadata:
+
 ```bash
+VERSION=0.4.5+maeriberii.1
 git fetch origin main
-git tag vX.Y.Z origin/main
-git push origin vX.Y.Z
-gh release create vX.Y.Z --verify-tag --generate-notes
+git tag "v${VERSION}" origin/main
+git push origin "v${VERSION}"
+gh release create "v${VERSION}" --verify-tag --generate-notes
 ```
 
 Use reviewed user-facing notes instead of `--generate-notes` when the generated notes are insufficient. Mark beta or release-candidate builds as prereleases.
