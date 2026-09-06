@@ -39,6 +39,7 @@ from .config_flow import (
 from .conversation import (
     _codex_input_from_chat_log,
     _codex_tools_from_chat_log,
+    _conversation_prompt_cache_key,
     _instructions_from_chat_log,
     _refresh_runtime_tokens,
     _run_tool_rounds,
@@ -306,8 +307,12 @@ async def _run_codex_ai_task_chat_log(
 ) -> None:
     """Run Codex over an AI Task chat log with one auth refresh retry."""
     runtime_options = runtime_options or normalize_runtime_options({})
+    prompt_cache_key = _conversation_prompt_cache_key(
+        getattr(entry, "entry_id", ""),
+        getattr(chat_log, "conversation_id", None),
+    )
 
-    async def run_tool_round(_round_number: int, allow_tools: bool) -> bool:
+    async def run_tool_round(round_number: int, allow_tools: bool) -> bool:
         nonlocal codex, tokens
         try:
             await _stream_codex_turn_into_chat_log(
@@ -330,6 +335,9 @@ async def _run_codex_ai_task_chat_log(
                 text_verbosity=text_verbosity,
                 text_format=text_format,
                 allow_tools=allow_tools,
+                prompt_cache_key=prompt_cache_key,
+                round_number=round_number,
+                is_ai_task=True,
             )
         except CodexAuthenticationError as err:
             LOGGER.warning(
@@ -369,6 +377,9 @@ async def _run_codex_ai_task_chat_log(
                     text_verbosity=text_verbosity,
                     text_format=text_format,
                     allow_tools=allow_tools,
+                    prompt_cache_key=prompt_cache_key,
+                    round_number=round_number,
+                    is_ai_task=True,
                 )
             except CodexAuthenticationError as retry_err:
                 raise CodexReauthRequiredError(

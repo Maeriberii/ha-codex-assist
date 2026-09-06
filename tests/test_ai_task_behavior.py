@@ -512,3 +512,49 @@ async def test_ai_task_uses_one_tools_disabled_turn_after_configured_tool_rounds
     assert [call["allow_tools"] for call in calls] == [True, True, True, True, True, False]
     assert [bool(call["tools"]) for call in calls] == [True, True, True, True, True, False]
     assert all(call["tools"][0]["name"] == "HassTurnOn" for call in calls[:5])
+
+
+@pytest.mark.asyncio
+async def test_ai_task_reuses_one_opaque_cache_key_for_tool_rounds(ai_task_module, monkeypatch):
+    calls = []
+
+    async def stream_turn(**kwargs):
+        calls.append(kwargs)
+        chat_log.unresponded_tool_results = len(calls) == 1
+        return chat_log.unresponded_tool_results
+
+    monkeypatch.setattr(ai_task_module, "_stream_codex_turn_into_chat_log", stream_turn)
+    chat_log = type(
+        "ChatLog",
+        (),
+        {
+            "conversation_id": "task-conversation-private",
+            "unresponded_tool_results": True,
+            "content": [],
+            "llm_api": None,
+        },
+    )()
+    entry = type("Entry", (), {"entry_id": "entry-private"})()
+
+    await ai_task_module._run_codex_ai_task_chat_log(
+        hass=object(),
+        entry=entry,
+        auth_client=object(),
+        tokens=CodexTokenSet("access-1", "refresh-1"),
+        codex=object(),
+        chat_log=chat_log,
+        entity_id="ai_task.codex_assist",
+        model="gpt-5.4",
+        prompt="Be concise.",
+        reasoning_effort="low",
+        reasoning_summary="off",
+        text_verbosity="low",
+        runtime_options=ai_task_module.RuntimeOptions(tool_iterations=2),
+    )
+
+    cache_keys = [call["prompt_cache_key"] for call in calls]
+    assert len(calls) == 2
+    assert cache_keys[0] == cache_keys[1]
+    assert len(cache_keys[0]) == 64
+    assert "entry-private" not in cache_keys[0]
+    assert "task-conversation-private" not in cache_keys[0]

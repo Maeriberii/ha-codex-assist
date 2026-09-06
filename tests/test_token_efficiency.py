@@ -72,9 +72,10 @@ def test_conversation_prompt_cache_key_is_stable_opaque_and_scoped(conversation_
 
     assert first == repeated
     assert first != other
-    assert first.startswith("ha-codex-assist:")
+    assert len(first) == 64
     assert "entry-private" not in first
     assert "conversation-a" not in first
+    assert conversation_module._conversation_prompt_cache_key("entry-private", None) is None
 
 
 @pytest.mark.asyncio
@@ -97,6 +98,43 @@ async def test_stream_turn_forwards_prompt_cache_key_when_present(conversation_m
     )
 
     assert codex.calls[0]["prompt_cache_key"] == "opaque-key"
+
+
+def test_payload_component_metrics_are_numeric_and_content_free(conversation_module, caplog):
+    user_marker = "PRIVATE_USER_MARKER"
+    result_marker = "PRIVATE_RESULT_MARKER"
+    metrics = conversation_module._payload_component_metrics(
+        instructions="PRIVATE_INSTRUCTIONS_MARKER",
+        input_items=[
+            {"role": "user", "content": user_marker},
+            {
+                "type": "function_call_output",
+                "call_id": "call-1",
+                "output": result_marker,
+            },
+        ],
+        tools=[
+            {
+                "type": "function",
+                "name": "PRIVATE_TOOL_NAME",
+                "description": "PRIVATE_TOOL_DESCRIPTION",
+                "parameters": {},
+            }
+        ],
+        chat_log=FakeChatLog([FakeContent(role="user", content=user_marker)]),
+        round_number=2,
+        allow_tools=True,
+        is_ai_task=False,
+    )
+
+    assert metrics["tool_count"] == 1
+    assert metrics["tool_result_count"] == 1
+    assert metrics["history_turn_count"] == 1
+    assert all(not isinstance(value, str) for value in metrics.values())
+    conversation_module.LOGGER.debug("Codex Assist Responses payload metrics: %s", metrics)
+    assert user_marker not in caplog.text
+    assert result_marker not in caplog.text
+    assert "PRIVATE_TOOL_DESCRIPTION" not in caplog.text
 
 
 def test_history_byte_budget_drops_old_complete_turn(conversation_module):

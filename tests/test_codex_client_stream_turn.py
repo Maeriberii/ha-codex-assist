@@ -122,7 +122,10 @@ async def test_stream_turn_posts_prompt_cache_key_and_logs_content_free_usage(ca
 
     assert deltas == []
     assert http.calls[0][2]["json"]["prompt_cache_key"] == "opaque-cache-key"
-    assert "input=120 cached=80 cache_write=20 output=12 reasoning=4 total=132" in caplog.text
+    assert (
+        "input=120 cached=80 cache_hit_ratio=0.666667 cache_write=20 "
+        "output=12 reasoning=4 total=132"
+    ) in caplog.text
     assert "rollout_budget=1.5" in caplog.text
     assert "private prompt" not in caplog.text
     assert "private input" not in caplog.text
