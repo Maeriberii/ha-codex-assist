@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from custom_components.codex_assist.downstream.history_policy import retain_complete_turns
 from custom_components.codex_assist.downstream.llm_api_policy import (
     default_selection,
@@ -59,3 +61,11 @@ def test_payload_metrics_never_include_content_values() -> None:
     )
     assert metrics["instructions_bytes"] == len(sentinel.encode())
     assert sentinel not in repr(metrics)
+
+
+def test_downstream_policies_do_not_depend_on_upstream_orchestrators() -> None:
+    downstream = Path("custom_components/codex_assist/downstream")
+    for module in downstream.glob("*.py"):
+        source = module.read_text()
+        assert "import conversation" not in source
+        assert "import ai_task" not in source

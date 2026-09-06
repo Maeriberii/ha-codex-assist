@@ -249,3 +249,53 @@ def test_empty_account_list_does_not_get_populated_with_defaults(monkeypatch):
     schema = module._settings_schema({"model": "saved-model"}, model_options=[])
     choices = _section_fields(schema, module.SECTION_CHAT_SETTINGS)["model"].config.options
     assert [o.value for o in choices] == ["saved-model"]
+
+
+def test_options_schema_exposes_an_explicit_multi_llm_api_allowlist(monkeypatch):
+    install_homeassistant_fakes(monkeypatch)
+    module = importlib.reload(importlib.import_module("custom_components.codex_assist.config_flow"))
+    apis = [
+        SimpleNamespace(id="assist", name="Assist"),
+        SimpleNamespace(id="mcp-grafana", name="Grafana MCP"),
+    ]
+
+    schema = module._settings_schema(
+        {module.CONF_LLM_HASS_API: "mcp-grafana"},
+        model_options=["gpt-5.4"],
+        llm_apis=apis,
+    )
+    field = _section_fields(schema, module.SECTION_ADVANCED_SETTINGS)[
+        module.CONF_LLM_HASS_API
+    ]
+
+    assert field.config.multiple is True
+    assert [option.value for option in field.config.options] == ["assist", "mcp-grafana"]
+    assert field.config.options[1].value == "mcp-grafana"
+
+
+@pytest.mark.asyncio
+async def test_options_flow_normalizes_and_rejects_empty_llm_api_selection(monkeypatch):
+    install_homeassistant_fakes(monkeypatch)
+    module = importlib.reload(importlib.import_module("custom_components.codex_assist.config_flow"))
+    flow = module.CodexAssistOptionsFlow()
+    flow.config_entry = SimpleNamespace(data={"model": "gpt-5.4"}, options={})
+    flow._catalog = SimpleNamespace(models=("gpt-5.4",))
+    flow.hass = object()
+    form_input = {
+        module.SECTION_CHAT_SETTINGS: {"model": "gpt-5.4"},
+        module.SECTION_ADVANCED_SETTINGS: {
+            module.CONF_LLM_HASS_API: ["assist", "mcp-grafana", "assist"],
+        },
+    }
+
+    saved = await flow.async_step_init(form_input)
+    assert saved["data"][module.CONF_LLM_HASS_API] == ["assist", "mcp-grafana"]
+
+    rejected = await flow.async_step_init(
+        {
+            module.SECTION_ADVANCED_SETTINGS: {
+                module.CONF_LLM_HASS_API: [],
+            },
+        }
+    )
+    assert rejected["errors"] == {module.CONF_LLM_HASS_API: "select_at_least_one_llm_api"}
