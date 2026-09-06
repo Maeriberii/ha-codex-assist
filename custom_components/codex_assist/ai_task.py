@@ -37,7 +37,6 @@ from .config_flow import (
     DEFAULT_WEB_SEARCH,
 )
 from .conversation import (
-    MAX_TOOL_ITERATIONS,
     _codex_input_from_chat_log,
     _codex_tools_from_chat_log,
     _instructions_from_chat_log,
@@ -45,6 +44,8 @@ from .conversation import (
     _run_tool_rounds,
     _stream_codex_turn_into_chat_log,
 )
+from .downstream.prompt_cache import prompt_cache_key
+from .downstream.runtime_policy import RuntimePolicy, normalize_runtime_policy
 from .error_formatting import request_failure_text
 from .schema_compat import to_openapi
 
@@ -96,6 +97,7 @@ class CodexAssistAITaskEntity(ai_task.AITaskEntity):
     ) -> ai_task.GenDataTaskResult:
         """Generate data from instructions and optional HA-native attachments."""
         settings = {**self.entry.data, **self.entry.options}
+        runtime_policy = normalize_runtime_policy(settings)
         model = settings.get("model", "gpt-5.4")
         prompt = settings.get(
             "prompt",
@@ -130,7 +132,12 @@ class CodexAssistAITaskEntity(ai_task.AITaskEntity):
                 request_failure_text("Codex Assist AI Task failed", err)
             ) from err
 
-        codex = CodexClient(http_client=http_client, access_token=tokens.access_token)
+        codex = CodexClient(
+            http_client=http_client,
+            access_token=tokens.access_token,
+            stream_timeout=runtime_policy.stream_timeout,
+            image_generation_timeout=runtime_policy.image_generation_timeout,
+        )
         try:
             text_format = _structured_output_format(task, chat_log)
             await _run_codex_ai_task_chat_log(
@@ -148,6 +155,7 @@ class CodexAssistAITaskEntity(ai_task.AITaskEntity):
                 text_verbosity=text_verbosity,
                 text_format=text_format,
                 web_search=web_search,
+                runtime_policy=runtime_policy,
             )
         except CodexRateLimitError as err:
             LOGGER.warning("Codex Assist AI Task hit usage or rate limit: %s", err)
@@ -186,6 +194,7 @@ class CodexAssistAITaskEntity(ai_task.AITaskEntity):
     ) -> ai_task.GenImageTaskResult:
         """Generate an image from instructions and optional HA-native attachments."""
         settings = {**self.entry.data, **self.entry.options}
+        runtime_policy = normalize_runtime_policy(settings)
         chat_model = settings.get("model", "gpt-5.4")
         image_model = settings.get("image_model", DEFAULT_IMAGE_MODEL)
         image_size = settings.get("image_size", DEFAULT_IMAGE_SIZE)
@@ -214,7 +223,12 @@ class CodexAssistAITaskEntity(ai_task.AITaskEntity):
                 request_failure_text("Codex Assist image generation failed", err)
             ) from err
 
-        codex = CodexClient(http_client=http_client, access_token=tokens.access_token)
+        codex = CodexClient(
+            http_client=http_client,
+            access_token=tokens.access_token,
+            stream_timeout=runtime_policy.stream_timeout,
+            image_generation_timeout=runtime_policy.image_generation_timeout,
+        )
         try:
             result = await _generate_codex_ai_task_image(
                 hass=self.hass,
@@ -227,6 +241,7 @@ class CodexAssistAITaskEntity(ai_task.AITaskEntity):
                 chat_model=chat_model,
                 image_model=image_model,
                 image_size=image_size,
+                runtime_policy=runtime_policy,
             )
         except CodexRateLimitError as err:
             LOGGER.warning(
@@ -288,9 +303,15 @@ async def _run_codex_ai_task_chat_log(
     text_verbosity: str,
     text_format: dict[str, Any] | None = None,
     web_search: bool = False,
+    runtime_policy: RuntimePolicy | None = None,
 ) -> None:
     """Run Codex over an AI Task chat log with one auth refresh retry."""
-    async def run_tool_round(_round_number: int, allow_tools: bool) -> bool:
+    runtime_policy = runtime_policy or normalize_runtime_policy({})
+    cache_key = prompt_cache_key(
+        getattr(entry, "entry_id", ""), getattr(chat_log, "conversation_id", None)
+    )
+
+    async def run_tool_round(round_number: int, allow_tools: bool) -> bool:
         nonlocal codex, tokens
         try:
             await _stream_codex_turn_into_chat_log(
@@ -313,6 +334,9 @@ async def _run_codex_ai_task_chat_log(
                 text_verbosity=text_verbosity,
                 text_format=text_format,
                 allow_tools=allow_tools,
+                prompt_cache_key=cache_key,
+                round_number=round_number,
+                is_ai_task=True,
             )
         except CodexAuthenticationError as err:
             LOGGER.warning(
@@ -326,6 +350,8 @@ async def _run_codex_ai_task_chat_log(
             codex = CodexClient(
                 http_client=get_async_client(hass),
                 access_token=tokens.access_token,
+                stream_timeout=runtime_policy.stream_timeout,
+                image_generation_timeout=runtime_policy.image_generation_timeout,
             )
             try:
                 await _stream_codex_turn_into_chat_log(
@@ -350,6 +376,9 @@ async def _run_codex_ai_task_chat_log(
                     text_verbosity=text_verbosity,
                     text_format=text_format,
                     allow_tools=allow_tools,
+                    prompt_cache_key=cache_key,
+                    round_number=round_number,
+                    is_ai_task=True,
                 )
             except CodexAuthenticationError as retry_err:
                 raise CodexReauthRequiredError(
@@ -358,7 +387,7 @@ async def _run_codex_ai_task_chat_log(
         return bool(chat_log.unresponded_tool_results)
 
     await _run_tool_rounds(
-        max_tool_rounds=MAX_TOOL_ITERATIONS,
+        max_tool_rounds=runtime_policy.tool_iterations,
         run_iteration=run_tool_round,
     )
 
@@ -375,6 +404,7 @@ async def _generate_codex_ai_task_image(
     chat_model: str,
     image_model: str,
     image_size: str,
+    runtime_policy: RuntimePolicy | None = None,
 ) -> CodexImageResult:
     """Run Codex image generation with one auth refresh retry."""
     try:
@@ -392,9 +422,12 @@ async def _generate_codex_ai_task_image(
             err,
         )
         tokens = await _refresh_runtime_tokens(hass, entry, auth_client, tokens)
+        runtime_policy = runtime_policy or normalize_runtime_policy({})
         codex = CodexClient(
             http_client=get_async_client(hass),
             access_token=tokens.access_token,
+            stream_timeout=runtime_policy.stream_timeout,
+            image_generation_timeout=runtime_policy.image_generation_timeout,
         )
         try:
             return await codex.generate_image(
@@ -468,9 +501,7 @@ def _apply_codex_strict_schema(schema: Any) -> None:
             _apply_codex_strict_schema(value)
 
     schema_type = schema.get("type")
-    if schema_type == "object" or (
-        isinstance(schema_type, list) and "object" in schema_type
-    ):
+    if schema_type == "object" or (isinstance(schema_type, list) and "object" in schema_type):
         schema["additionalProperties"] = False
 
 
@@ -571,7 +602,5 @@ def _remove_optional_null_values(data: Any, structure: Any) -> Any:
         ):
             del normalized[key_name]
         else:
-            normalized[key_name] = _remove_optional_null_values(
-                normalized[key_name], value_schema
-            )
+            normalized[key_name] = _remove_optional_null_values(normalized[key_name], value_schema)
     return normalized

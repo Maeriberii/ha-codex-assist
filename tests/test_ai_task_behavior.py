@@ -461,7 +461,7 @@ async def test_ai_task_image_retry_reauths_when_refreshed_token_is_rejected(
 
 
 @pytest.mark.asyncio
-async def test_ai_task_uses_one_tools_disabled_turn_after_five_tool_rounds(
+async def test_ai_task_uses_one_tools_disabled_turn_after_default_tool_rounds(
     ai_task_module,
     monkeypatch,
 ):
@@ -508,6 +508,6 @@ async def test_ai_task_uses_one_tools_disabled_turn_after_five_tool_rounds(
         text_verbosity="medium",
     )
 
-    assert [call["allow_tools"] for call in calls] == [True, True, True, True, True, False]
-    assert [bool(call["tools"]) for call in calls] == [True, True, True, True, True, False]
-    assert all(call["tools"][0]["name"] == "HassTurnOn" for call in calls[:5])
+    assert [call["allow_tools"] for call in calls] == [True] * 8 + [False]
+    assert [bool(call["tools"]) for call in calls] == [True] * 8 + [False]
+    assert all(call["tools"][0]["name"] == "HassTurnOn" for call in calls[:8])

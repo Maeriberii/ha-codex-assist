@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .codex_image import image_model_quality, validate_image_size
+from .downstream.telemetry import log_provider_usage, provider_usage_from_event
 
 CODEX_BACKEND_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_STREAM_TIMEOUT = 300
@@ -74,9 +75,7 @@ class CodexResponseItemDelta:
     item: dict[str, Any]
 
 
-CodexStreamDelta = (
-    CodexTextDelta | CodexToolCallDelta | CodexCitationDelta | CodexResponseItemDelta
-)
+CodexStreamDelta = CodexTextDelta | CodexToolCallDelta | CodexCitationDelta | CodexResponseItemDelta
 
 
 class CodexClient:
@@ -86,10 +85,14 @@ class CodexClient:
         http_client: AsyncPostClient,
         access_token: str,
         base_url: str = CODEX_BACKEND_BASE_URL,
+        stream_timeout: Any = CODEX_STREAM_TIMEOUT,
+        image_generation_timeout: Any = 300,
     ) -> None:
         self._http_client = http_client
         self._access_token = access_token
         self._base_url = base_url.rstrip("/")
+        self._stream_timeout = stream_timeout
+        self._image_generation_timeout = image_generation_timeout
 
     async def generate_text(
         self,
@@ -155,6 +158,7 @@ class CodexClient:
         reasoning_summary: str | None = None,
         text_verbosity: str | None = None,
         text_format: dict[str, Any] | None = None,
+        prompt_cache_key: str | None = None,
     ) -> AsyncIterator[CodexStreamDelta]:
         payload = _responses_payload(
             model=model,
@@ -165,6 +169,7 @@ class CodexClient:
             reasoning_summary=reasoning_summary,
             text_verbosity=text_verbosity,
             text_format=text_format,
+            prompt_cache_key=prompt_cache_key,
         )
 
         async with self._http_client.stream(
@@ -172,7 +177,7 @@ class CodexClient:
             f"{self._base_url}/responses",
             headers=codex_headers(self._access_token),
             json=payload,
-            timeout=CODEX_STREAM_TIMEOUT,
+            timeout=self._stream_timeout,
         ) as response:
             if response.status_code != 200:
                 error = await _stream_response_error(response)
@@ -190,6 +195,8 @@ class CodexClient:
             completed_tool_call_ids: set[str] = set()
             anonymous_call_index = 0
             async for event in _aiter_sse_events(response):
+                if usage := provider_usage_from_event(event):
+                    log_provider_usage("stream", usage)
                 event_type = event.get("type")
                 for citation in _citations_from_event(event):
                     yield CodexCitationDelta(citation)
@@ -261,7 +268,7 @@ class CodexClient:
             f"{self._base_url}/responses",
             headers=codex_headers(self._access_token),
             json=payload,
-            timeout=300,
+            timeout=self._image_generation_timeout,
         ) as response:
             if response.status_code != 200:
                 error = await _stream_response_error(response)
@@ -276,6 +283,8 @@ class CodexClient:
                 )
 
             async for event in _aiter_sse_events(response):
+                if usage := provider_usage_from_event(event):
+                    log_provider_usage("image", usage)
                 found = _extract_image_b64(event)
                 if found:
                     image_b64 = found
@@ -309,6 +318,7 @@ def _responses_payload(
     reasoning_summary: str | None = None,
     text_verbosity: str | None = None,
     text_format: dict[str, Any] | None = None,
+    prompt_cache_key: str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": model,
@@ -317,6 +327,8 @@ def _responses_payload(
         "store": False,
         "stream": True,
     }
+    if prompt_cache_key:
+        payload["prompt_cache_key"] = prompt_cache_key
     if tools:
         payload["tools"] = tools
     include: list[str] = []
@@ -498,9 +510,7 @@ class CodexResponseError:
     code: str | None = None
 
 
-def _function_call_item_key(
-    item: dict[str, Any], event: dict[str, Any]
-) -> str | None:
+def _function_call_item_key(item: dict[str, Any], event: dict[str, Any]) -> str | None:
     for value in (
         item.get("id"),
         event.get("item_id"),
@@ -645,7 +655,7 @@ def _response_error(response: Any) -> CodexResponseError:
     text = getattr(response, "text", "") or ""
     try:
         payload = json.loads(text) if text else response.json()
-    except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
+    except json.JSONDecodeError, ValueError, TypeError, AttributeError:
         return CodexResponseError(text[:500] if text else "unknown error")
     if isinstance(payload, dict):
         detail = payload.get("detail") or payload.get("message") or payload.get("error")

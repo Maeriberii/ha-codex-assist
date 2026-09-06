@@ -71,6 +71,7 @@ def test_options_schema_groups_everyday_advanced_and_image_controls(monkeypatch)
         module.SECTION_CHAT_SETTINGS,
         module.SECTION_ADVANCED_SETTINGS,
         module.SECTION_IMAGE_SETTINGS,
+        module.SECTION_RUNTIME_ORCHESTRATION,
     ]
     assert sections[module.SECTION_CHAT_SETTINGS].options == {"collapsed": False}
     assert sections[module.SECTION_ADVANCED_SETTINGS].options == {"collapsed": True}

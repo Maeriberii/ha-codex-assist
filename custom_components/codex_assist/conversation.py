@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -44,8 +45,18 @@ from .config_flow import (
     DEFAULT_TEXT_VERBOSITY,
     DEFAULT_WEB_SEARCH,
 )
+from .downstream.history_policy import recent_user_content_indexes, retain_complete_turns
+from .downstream.llm_api_policy import default_selection
+from .downstream.prompt_cache import prompt_cache_key
+from .downstream.runtime_policy import normalize_runtime_policy
+from .downstream.telemetry import log_payload_metrics
 from .error_formatting import request_failure_text
 from .schema_compat import to_openapi
+
+try:
+    from homeassistant.const import CONF_LLM_HASS_API
+except ImportError:
+    CONF_LLM_HASS_API = "llm_hass_api"
 
 MAX_TOOL_ITERATIONS = 5
 MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024
@@ -98,6 +109,7 @@ class CodexAssistConversationEntity(
         chat_log: conversation.ChatLog,
     ) -> conversation.ConversationResult:
         settings = {**self.entry.data, **self.entry.options}
+        runtime_policy = normalize_runtime_policy(settings)
         model = settings.get("model", "gpt-5.4")
         prompt = settings.get(
             "prompt",
@@ -107,13 +119,21 @@ class CodexAssistConversationEntity(
         reasoning_summary = settings.get("reasoning_summary", DEFAULT_REASONING_SUMMARY)
         text_verbosity = settings.get("text_verbosity", DEFAULT_TEXT_VERBOSITY)
         web_search = bool(settings.get(CONF_WEB_SEARCH, DEFAULT_WEB_SEARCH))
+        llm_api_ids = default_selection(
+            settings.get(CONF_LLM_HASS_API), assist_api_id=llm.LLM_API_ASSIST
+        )
         citations: list[CodexCitation] = []
+        cache_key = prompt_cache_key(
+            self.entry.entry_id,
+            getattr(user_input, "conversation_id", None)
+            or getattr(chat_log, "conversation_id", None),
+        )
 
         response = intent.IntentResponse(language=user_input.language)
         try:
             await chat_log.async_provide_llm_data(
                 user_input.as_llm_context(DOMAIN),
-                llm.LLM_API_ASSIST,
+                llm_api_ids,
                 prompt,
                 user_input.extra_system_prompt,
             )
@@ -144,10 +164,15 @@ class CodexAssistConversationEntity(
             )
             return conversation.async_get_result_from_chat_log(user_input, chat_log)
 
-        codex = CodexClient(http_client=http_client, access_token=tokens.access_token)
+        codex = CodexClient(
+            http_client=http_client,
+            access_token=tokens.access_token,
+            stream_timeout=runtime_policy.stream_timeout,
+            image_generation_timeout=runtime_policy.image_generation_timeout,
+        )
         try:
-            for _iteration in range(MAX_TOOL_ITERATIONS + 1):
-                allow_tools = _iteration < MAX_TOOL_ITERATIONS
+            for _iteration in range(runtime_policy.tool_iterations + 1):
+                allow_tools = _iteration < runtime_policy.tool_iterations
                 try:
                     tool_call_requested = await _stream_codex_turn_into_chat_log(
                         chat_log=chat_log,
@@ -168,6 +193,8 @@ class CodexAssistConversationEntity(
                         text_verbosity=text_verbosity,
                         allow_tools=allow_tools,
                         citation_sink=citations,
+                        prompt_cache_key=cache_key,
+                        round_number=_iteration + 1,
                     )
                 except CodexAuthenticationError as err:
                     LOGGER.warning(
@@ -195,6 +222,8 @@ class CodexAssistConversationEntity(
                     codex = CodexClient(
                         http_client=http_client,
                         access_token=tokens.access_token,
+                        stream_timeout=runtime_policy.stream_timeout,
+                        image_generation_timeout=runtime_policy.image_generation_timeout,
                     )
                     try:
                         tool_call_requested = await _stream_codex_turn_into_chat_log(
@@ -216,6 +245,8 @@ class CodexAssistConversationEntity(
                             text_verbosity=text_verbosity,
                             allow_tools=allow_tools,
                             citation_sink=citations,
+                            prompt_cache_key=cache_key,
+                            round_number=_iteration + 1,
                         )
                     except CodexAuthenticationError as retry_err:
                         LOGGER.warning(
@@ -303,6 +334,9 @@ async def _stream_codex_turn_into_chat_log(
     text_format: dict[str, Any] | None = None,
     allow_tools: bool = True,
     citation_sink: list[CodexCitation] | None = None,
+    prompt_cache_key: str | None = None,
+    round_number: int | None = None,
+    is_ai_task: bool = False,
 ) -> bool:
     tool_call_requested = False
 
@@ -310,32 +344,65 @@ async def _stream_codex_turn_into_chat_log(
         nonlocal tool_call_requested
         tool_call_requested = True
 
-    async for _delta in chat_log.async_add_delta_content_stream(
-        entity_id,
-        _codex_stream_to_assistant_deltas(
-            codex.stream_turn(
-                model=model,
-                instructions=instructions,
-                input_items=input_items,
-                tools=tools,
-                reasoning_effort=reasoning_effort,
-                reasoning_summary=reasoning_summary,
-                text_verbosity=text_verbosity,
-                text_format=text_format,
-            ),
-            on_tool_call=mark_tool_call_requested,
-            allow_tools=allow_tools,
-            citation_sink=citation_sink,
-        ),
-    ):
-        pass
+    log_payload_metrics(
+        instructions=instructions,
+        input_items=input_items,
+        tools=tools,
+        round_number=round_number,
+        allow_tools=allow_tools,
+        is_ai_task=is_ai_task,
+    )
+    emitted_text = False
+
+    def mark_text_emitted(text: str) -> None:
+        nonlocal emitted_text
+        emitted_text = emitted_text or bool(text)
+
+    for attempt in range(2):
+        try:
+            async for _delta in chat_log.async_add_delta_content_stream(
+                entity_id,
+                _codex_stream_to_assistant_deltas(
+                    codex.stream_turn(
+                        **_stream_turn_kwargs(
+                            model=model,
+                            instructions=instructions,
+                            input_items=input_items,
+                            tools=tools,
+                            reasoning_effort=reasoning_effort,
+                            reasoning_summary=reasoning_summary,
+                            text_verbosity=text_verbosity,
+                            text_format=text_format,
+                            prompt_cache_key=prompt_cache_key,
+                        )
+                    ),
+                    on_tool_call=mark_tool_call_requested,
+                    on_text_delta=mark_text_emitted,
+                    allow_tools=allow_tools,
+                    citation_sink=citation_sink,
+                ),
+            ):
+                pass
+            break
+        except httpx.RemoteProtocolError, httpx.ReadError:
+            if allow_tools or emitted_text or attempt:
+                raise
+            await asyncio.sleep(0.5)
     return tool_call_requested
+
+
+def _stream_turn_kwargs(*, prompt_cache_key: str | None, **kwargs: Any) -> dict[str, Any]:
+    """Avoid changing the upstream request shape when no cache scope exists."""
+    if prompt_cache_key is not None:
+        kwargs["prompt_cache_key"] = prompt_cache_key
+    return kwargs
 
 
 async def _codex_stream_to_assistant_deltas(
     stream: AsyncIterator[CodexStreamDelta],
     *,
     on_tool_call: Callable[[], None] | None = None,
+    on_text_delta: Callable[[str], None] | None = None,
     allow_tools: bool = True,
     citation_sink: list[CodexCitation] | None = None,
 ) -> AsyncIterator[AssistantContentDeltaDict]:
@@ -359,6 +426,8 @@ async def _codex_stream_to_assistant_deltas(
             yield {"role": "assistant"}
             started = True
         if isinstance(delta, CodexTextDelta):
+            if on_text_delta is not None:
+                on_text_delta(delta.text)
             yield {"content": delta.text}
         elif isinstance(delta, CodexToolCallDelta):
             if not allow_tools:
@@ -490,7 +559,8 @@ async def _codex_input_from_chat_log(
     chat_log: conversation.ChatLog,
 ) -> list[dict[str, Any]]:
     input_items: list[dict[str, Any]] = []
-    for content in chat_log.content:
+    image_history_indexes = recent_user_content_indexes(chat_log.content)
+    for index, content in enumerate(chat_log.content):
         role = getattr(content, "role", None)
         text = getattr(content, "content", None)
         if role == "system":
@@ -500,7 +570,9 @@ async def _codex_input_from_chat_log(
                 {
                     "type": "function_call_output",
                     "call_id": content.tool_call_id,
-                    "output": json.dumps(content.tool_result),
+                    "output": json.dumps(
+                        content.tool_result, ensure_ascii=False, separators=(",", ":")
+                    ),
                 }
             )
             continue
@@ -510,7 +582,7 @@ async def _codex_input_from_chat_log(
             continue
         if role in {"user", "assistant"} and isinstance(text, str) and text.strip():
             item_content: str | list[dict[str, Any]] = text
-            if role == "user":
+            if role == "user" and index in image_history_indexes:
                 images = await _async_image_attachments_for_codex(
                     hass,
                     getattr(content, "attachments", None),
@@ -538,31 +610,7 @@ def _trim_codex_input_items(
     *,
     max_items: int,
 ) -> list[dict[str, Any]]:
-    if len(input_items) <= max_items:
-        return input_items
-
-    groups: list[list[dict[str, Any]]] = []
-    current: list[dict[str, Any]] = []
-    for item in input_items:
-        if item.get("role") == "user" and current:
-            groups.append(current)
-            current = []
-        current.append(item)
-    if current:
-        groups.append(current)
-
-    selected: list[list[dict[str, Any]]] = []
-    selected_items = 0
-    for group in reversed(groups):
-        if not selected and len(group) > max_items:
-            raise ValueError(
-                f"Current Codex turn contains {len(group)} items; maximum is {max_items}"
-            )
-        if selected and selected_items + len(group) > max_items:
-            break
-        selected.append(group)
-        selected_items += len(group)
-    return [item for group in reversed(selected) for item in group]
+    return retain_complete_turns(input_items, max_items=max_items)
 
 
 async def _async_image_attachments_for_codex(

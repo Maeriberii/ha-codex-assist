@@ -6,7 +6,7 @@ from typing import Any
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import section
-from homeassistant.helpers import selector
+from homeassistant.helpers import llm, selector
 from homeassistant.helpers.httpx_client import get_async_client
 
 from . import DOMAIN
@@ -22,7 +22,22 @@ from .codex_image import (
     IMAGE_SIZE_OPTIONS,
 )
 from .codex_models import ModelCatalog, ModelDiscoveryCache, fetch_codex_model_ids
+from .downstream.llm_api_policy import (
+    default_selection,
+    normalize_selection,
+    valid_explicit_selection,
+)
+from .downstream.runtime_policy import (
+    RUNTIME_OPTION_SPECS,
+    RuntimeOptionSpec,
+    invalid_runtime_option_keys,
+)
 from .model_discovery import async_entry_model_catalog
+
+try:
+    from homeassistant.const import CONF_LLM_HASS_API
+except ImportError:
+    CONF_LLM_HASS_API = "llm_hass_api"
 
 CONF_ACCESS_TOKEN = "access_token"
 CONF_PROMPT = "prompt"
@@ -37,9 +52,10 @@ CONF_WEB_SEARCH = "web_search"
 SECTION_CHAT_SETTINGS = "chat_settings"
 SECTION_ADVANCED_SETTINGS = "advanced_settings"
 SECTION_IMAGE_SETTINGS = "image_settings"
+SECTION_RUNTIME_ORCHESTRATION = "runtime_orchestration"
 DEFAULT_PROMPT = "You are a concise Home Assistant Assist conversation agent."
 DEFAULT_REASONING_EFFORT = "low"
-DEFAULT_REASONING_SUMMARY = "auto"
+DEFAULT_REASONING_SUMMARY = "off"
 DEFAULT_TEXT_VERBOSITY = "medium"
 DEFAULT_WEB_SEARCH = False
 
@@ -230,6 +246,29 @@ class CodexAssistOptionsFlow(config_entries.OptionsFlow):
         errors = {}
         if user_input is not None:
             data = _flatten_settings_input(user_input)
+            invalid = invalid_runtime_option_keys(data)
+            if invalid:
+                return self.async_show_form(
+                    step_id="init",
+                    data_schema=_settings_schema(
+                        defaults,
+                        model_options=list(self._catalog.models) if self._catalog else [],
+                        llm_apis=_async_get_llm_apis(self.hass),
+                    ),
+                    errors={key: "value_out_of_range" for key in invalid},
+                )
+            if CONF_LLM_HASS_API in data:
+                if not valid_explicit_selection(data[CONF_LLM_HASS_API]):
+                    return self.async_show_form(
+                        step_id="init",
+                        data_schema=_settings_schema(
+                            defaults,
+                            model_options=list(self._catalog.models) if self._catalog else [],
+                            llm_apis=_async_get_llm_apis(self.hass),
+                        ),
+                        errors={CONF_LLM_HASS_API: "select_at_least_one_llm_api"},
+                    )
+                data[CONF_LLM_HASS_API] = normalize_selection(data[CONF_LLM_HASS_API])
             model = data.get(CONF_MODEL, defaults.get(CONF_MODEL))
             if (
                 self._catalog is not None
@@ -250,7 +289,11 @@ class CodexAssistOptionsFlow(config_entries.OptionsFlow):
             )
         return self.async_show_form(
             step_id="init",
-            data_schema=_settings_schema(defaults, model_options=list(self._catalog.models)),
+            data_schema=_settings_schema(
+                defaults,
+                model_options=list(self._catalog.models),
+                llm_apis=_async_get_llm_apis(self.hass),
+            ),
             errors=errors,
             description_placeholders={
                 "model_status": _catalog_description(self._catalog, defaults.get(CONF_MODEL))
@@ -262,6 +305,7 @@ def _settings_schema(
     defaults: dict[str, Any],
     *,
     model_options: list[str],
+    llm_apis: list[llm.API] | None = None,
 ) -> vol.Schema:
     model_options = list(dict.fromkeys(model_options))
     saved_model = defaults.get(CONF_MODEL)
@@ -272,6 +316,33 @@ def _settings_schema(
     image_size_default = defaults.get(CONF_IMAGE_SIZE, DEFAULT_IMAGE_SIZE)
     if image_size_default not in IMAGE_SIZE_OPTIONS:
         image_size_default = DEFAULT_IMAGE_SIZE
+
+    advanced_settings: dict[Any, Any] = {
+        vol.Optional(
+            CONF_PROMPT, default=defaults.get(CONF_PROMPT, DEFAULT_PROMPT)
+        ): selector.TextSelector(selector.TextSelectorConfig(multiline=True)),
+        vol.Optional(
+            CONF_REASONING_EFFORT,
+            default=defaults.get(CONF_REASONING_EFFORT, DEFAULT_REASONING_EFFORT),
+        ): _low_medium_high_selector(),
+    }
+    if llm_apis is not None:
+        advanced_settings[
+            vol.Optional(
+                CONF_LLM_HASS_API,
+                default=default_selection(
+                    defaults.get(CONF_LLM_HASS_API), assist_api_id=llm.LLM_API_ASSIST
+                ),
+            )
+        ] = selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=[
+                    selector.SelectOptionDict(value=api.id, label=api.name) for api in llm_apis
+                ],
+                mode=selector.SelectSelectorMode.DROPDOWN,
+                multiple=True,
+            )
+        )
 
     return vol.Schema(
         {
@@ -300,18 +371,7 @@ def _settings_schema(
                 {"collapsed": False},
             ),
             vol.Required(SECTION_ADVANCED_SETTINGS): section(
-                vol.Schema(
-                    {
-                        vol.Optional(
-                            CONF_PROMPT,
-                            default=defaults.get(CONF_PROMPT, DEFAULT_PROMPT),
-                        ): selector.TextSelector(selector.TextSelectorConfig(multiline=True)),
-                        vol.Optional(
-                            CONF_REASONING_EFFORT,
-                            default=defaults.get(CONF_REASONING_EFFORT, DEFAULT_REASONING_EFFORT),
-                        ): _low_medium_high_selector(),
-                    }
-                ),
+                vol.Schema(advanced_settings),
                 {"collapsed": True},
             ),
             vol.Required(SECTION_IMAGE_SETTINGS): section(
@@ -329,6 +389,17 @@ def _settings_schema(
                 ),
                 {"collapsed": True},
             ),
+            vol.Optional(SECTION_RUNTIME_ORCHESTRATION): section(
+                vol.Schema(
+                    {
+                        vol.Optional(
+                            spec.key, default=defaults.get(spec.key, spec.default)
+                        ): _number_selector(spec)
+                        for spec in RUNTIME_OPTION_SPECS
+                    }
+                ),
+                {"collapsed": True},
+            ),
         }
     )
 
@@ -336,11 +407,7 @@ def _settings_schema(
 def _model_schema(defaults: dict[str, Any], *, model_options: list[str]) -> vol.Schema:
     model_options = list(dict.fromkeys(model_options))
     saved_model = defaults.get(CONF_MODEL)
-    model_default = (
-        saved_model
-        if saved_model in model_options
-        else next(iter(model_options), None)
-    )
+    model_default = saved_model if saved_model in model_options else next(iter(model_options), None)
     if not model_options:
         return vol.Schema({})
     return vol.Schema(
@@ -354,11 +421,30 @@ def _flatten_settings_input(user_input: Mapping[str, Any]) -> dict[str, Any]:
         SECTION_CHAT_SETTINGS,
         SECTION_ADVANCED_SETTINGS,
         SECTION_IMAGE_SETTINGS,
+        SECTION_RUNTIME_ORCHESTRATION,
     ):
         section_data = user_input.get(section_name)
         if isinstance(section_data, Mapping):
             settings.update(section_data)
     return settings
+
+
+def _number_selector(spec: RuntimeOptionSpec) -> selector.NumberSelector:
+    config: dict[str, Any] = {
+        "min": spec.minimum,
+        "max": spec.maximum,
+        "step": 1,
+        "mode": "box",
+    }
+    if spec.unit is not None:
+        config["unit_of_measurement"] = spec.unit
+    return selector.NumberSelector(selector.NumberSelectorConfig(**config))
+
+
+def _async_get_llm_apis(hass: Any) -> list[llm.API]:
+    """Use the public API when present; retain contract-test compatibility."""
+    getter = getattr(llm, "async_get_apis", None)
+    return getter(hass) if getter is not None else []
 
 
 def _low_medium_high_selector() -> selector.SelectSelector:
