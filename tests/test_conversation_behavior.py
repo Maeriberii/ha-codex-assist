@@ -341,6 +341,79 @@ async def test_stream_codex_turn_into_chat_log_calls_chat_log_stream_api(
 
 
 @pytest.mark.asyncio
+async def test_final_synthesis_retries_one_pre_text_transport_failure(
+    conversation_module, monkeypatch
+):
+    class FlakyCodex:
+        def __init__(self):
+            self.calls = 0
+
+        def stream_turn(self, **kwargs):
+            del kwargs
+            self.calls += 1
+
+            async def stream():
+                if self.calls == 1:
+                    raise httpx.ReadError("temporary")
+                yield CodexTextDelta("done")
+
+            return stream()
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(conversation_module.asyncio, "sleep", no_sleep)
+    codex = FlakyCodex()
+    await conversation_module._stream_codex_turn_into_chat_log(
+        chat_log=FakeChatLog(),
+        codex=codex,
+        entity_id="conversation.codex_assist",
+        model="gpt-5.4",
+        instructions="Be concise.",
+        input_items=[],
+        tools=[],
+        reasoning_effort="low",
+        reasoning_summary="off",
+        text_verbosity="medium",
+        allow_tools=False,
+    )
+    assert codex.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_tool_round_does_not_retry_transport_failure(conversation_module):
+    class FailingCodex:
+        def __init__(self):
+            self.calls = 0
+
+        def stream_turn(self, **kwargs):
+            del kwargs
+            self.calls += 1
+
+            async def stream():
+                raise httpx.RemoteProtocolError("temporary")
+                yield CodexTextDelta("unreachable")
+
+            return stream()
+
+    codex = FailingCodex()
+    with pytest.raises(httpx.RemoteProtocolError):
+        await conversation_module._stream_codex_turn_into_chat_log(
+            chat_log=FakeChatLog(),
+            codex=codex,
+            entity_id="conversation.codex_assist",
+            model="gpt-5.4",
+            instructions="Be concise.",
+            input_items=[],
+            tools=[],
+            reasoning_effort="low",
+            reasoning_summary="off",
+            text_verbosity="medium",
+        )
+    assert codex.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_codex_input_from_chat_log_translates_image_attachments(
     conversation_module,
     tmp_path: Path,
