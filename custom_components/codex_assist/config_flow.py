@@ -407,7 +407,11 @@ def _settings_schema(
 def _model_schema(defaults: dict[str, Any], *, model_options: list[str]) -> vol.Schema:
     model_options = list(dict.fromkeys(model_options))
     saved_model = defaults.get(CONF_MODEL)
-    model_default = saved_model if saved_model in model_options else next(iter(model_options), None)
+    model_default = (
+        saved_model
+        if saved_model in model_options
+        else next(iter(model_options), None)
+    )
     if not model_options:
         return vol.Schema({})
     return vol.Schema(

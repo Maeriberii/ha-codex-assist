@@ -501,7 +501,9 @@ def _apply_codex_strict_schema(schema: Any) -> None:
             _apply_codex_strict_schema(value)
 
     schema_type = schema.get("type")
-    if schema_type == "object" or (isinstance(schema_type, list) and "object" in schema_type):
+    if schema_type == "object" or (
+        isinstance(schema_type, list) and "object" in schema_type
+    ):
         schema["additionalProperties"] = False
 
 
@@ -602,5 +604,7 @@ def _remove_optional_null_values(data: Any, structure: Any) -> Any:
         ):
             del normalized[key_name]
         else:
-            normalized[key_name] = _remove_optional_null_values(normalized[key_name], value_schema)
+            normalized[key_name] = _remove_optional_null_values(
+                normalized[key_name], value_schema
+            )
     return normalized

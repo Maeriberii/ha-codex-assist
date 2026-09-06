@@ -75,7 +75,9 @@ class CodexResponseItemDelta:
     item: dict[str, Any]
 
 
-CodexStreamDelta = CodexTextDelta | CodexToolCallDelta | CodexCitationDelta | CodexResponseItemDelta
+CodexStreamDelta = (
+    CodexTextDelta | CodexToolCallDelta | CodexCitationDelta | CodexResponseItemDelta
+)
 
 
 class CodexClient:
@@ -510,7 +512,9 @@ class CodexResponseError:
     code: str | None = None
 
 
-def _function_call_item_key(item: dict[str, Any], event: dict[str, Any]) -> str | None:
+def _function_call_item_key(
+    item: dict[str, Any], event: dict[str, Any]
+) -> str | None:
     for value in (
         item.get("id"),
         event.get("item_id"),
@@ -655,7 +659,7 @@ def _response_error(response: Any) -> CodexResponseError:
     text = getattr(response, "text", "") or ""
     try:
         payload = json.loads(text) if text else response.json()
-    except json.JSONDecodeError, ValueError, TypeError, AttributeError:
+    except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
         return CodexResponseError(text[:500] if text else "unknown error")
     if isinstance(payload, dict):
         detail = payload.get("detail") or payload.get("message") or payload.get("error")
