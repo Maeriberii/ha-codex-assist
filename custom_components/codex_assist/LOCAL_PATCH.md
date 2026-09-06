@@ -17,13 +17,18 @@ image handling.
 - **Responses SSE transport policy.** A read timeout of `0` means unlimited
   idle reads for an open SSE response; connect, write, and pool limits stay
   bounded. Auth-retry clients retain the same policy.
-- **Conversation token efficiency.** Conversation requests use an opaque,
-  conversation-scoped `prompt_cache_key`, expose content-free usage/cache
-  counters at debug level, and retain recent history under both item and
-  serialized-byte budgets without splitting a user/tool turn. Image attachments
-  are replayed only for the two most recent user turns instead of being
-  re-encoded indefinitely. Unset reasoning-summary requests default to `off`;
-  an explicitly saved legacy value is preserved.
+- **Conversation token efficiency.** Conversation and AI Task tool rounds use
+  an opaque, deterministic 64-character `prompt_cache_key` when Home Assistant
+  supplies a stable conversation scope; no key is sent for an absent scope.
+  Debug telemetry records only numeric payload component sizes/counts from the
+  final Responses payload (instructions, all tools and function tools,
+  input items, retained turns/native state/tool results/images, round) plus
+  provider usage/cache ratios. It separates top-level payload shares from
+  overlapping input-item shares. Recent history remains bounded by item and
+  serialized-byte budgets without splitting a user/tool turn; image attachments
+  are replayed only for the two most recent user turns. Tool results use
+  lossless compact JSON. Unset reasoning-summary requests default to `off`; an
+  explicitly saved legacy value is preserved.
 
 Provider transcript contents, prompts, authentication tokens, and tool arguments
 are not written to options, diagnostics, or usage telemetry. Usage telemetry is

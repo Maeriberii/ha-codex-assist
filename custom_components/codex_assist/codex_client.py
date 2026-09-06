@@ -571,14 +571,16 @@ def _nonnegative_int(value: Any) -> int:
 
 
 def _log_usage(operation: str, usage: CodexUsage) -> None:
+    cache_hit_ratio = (
+        usage.cached_input_tokens / usage.input_tokens if usage.input_tokens else 0.0
+    )
     LOGGER.debug(
-        (
-            "Codex %s usage input=%d cached=%d cache_write=%d output=%d "
-            "reasoning=%d total=%d rollout_budget=%s"
-        ),
+        "Codex %s usage input=%d cached=%d cache_hit_ratio=%.6f cache_write=%d "
+        "output=%d reasoning=%d total=%d rollout_budget=%s",
         operation,
         usage.input_tokens,
         usage.cached_input_tokens,
+        cache_hit_ratio,
         usage.cache_write_input_tokens,
         usage.output_tokens,
         usage.reasoning_output_tokens,

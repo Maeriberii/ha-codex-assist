@@ -133,7 +133,7 @@ async def test_codex_input_from_chat_log_preserves_history_tools_and_results(
         {
             "type": "function_call_output",
             "call_id": "call-1",
-            "output": json.dumps({"success": True}),
+                "output": json.dumps({"success": True}, separators=(",", ":")),
         },
         {"role": "assistant", "content": "Done."},
     ]
@@ -583,7 +583,7 @@ async def test_codex_input_replays_owned_native_items_without_reconstruction(
         {
             "type": "function_call_output",
             "call_id": "call-1",
-            "output": json.dumps({"success": True}),
+                "output": json.dumps({"success": True}, separators=(",", ":")),
         },
     ]
 
@@ -801,7 +801,7 @@ async def test_native_transcript_survives_tool_round_and_final_synthesis(
         {
             "type": "function_call_output",
             "call_id": "call-1",
-            "output": json.dumps({"success": True}),
+                "output": json.dumps({"success": True}, separators=(",", ":")),
         },
     ]
 

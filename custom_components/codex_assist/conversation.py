@@ -71,6 +71,99 @@ _WEB_SEARCH_CITATION_INSTRUCTIONS = (
 )
 
 
+def _serialized_bytes(value: Any) -> int:
+    """Return deterministic UTF-8 JSON size without retaining request content."""
+    return len(
+        json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+    )
+
+
+def _image_payload_metrics(input_items: list[dict[str, Any]]) -> tuple[int, int]:
+    image_count = 0
+    image_payload_bytes = 0
+    for item in input_items:
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "input_image":
+                image_count += 1
+                image_payload_bytes += _serialized_bytes(part)
+    return image_count, image_payload_bytes
+
+
+def _native_response_items(input_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Identify replayable provider items in the final Responses input only."""
+    native_types = {"reasoning", "message", "web_search_call"}
+    return [
+        item
+        for item in input_items
+        if item.get("type") in native_types
+        or (item.get("type") == "function_call" and isinstance(item.get("id"), str))
+    ]
+
+
+def _payload_component_metrics(
+    *,
+    instructions: str,
+    input_items: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    round_number: int | None,
+    allow_tools: bool,
+    is_ai_task: bool,
+) -> dict[str, int | bool | float]:
+    """Return content-free structural request accounting for debug telemetry."""
+    function_tools = [tool for tool in tools if tool.get("type") == "function"]
+    tool_results = [item for item in input_items if item.get("type") == "function_call_output"]
+    native_items = _native_response_items(input_items)
+    retained_turn_count = sum(item.get("role") == "user" for item in input_items)
+    image_count, image_payload_bytes = _image_payload_metrics(input_items)
+    function_tool_bytes = _serialized_bytes(function_tools)
+    tools_bytes = _serialized_bytes(tools)
+    input_items_bytes = _serialized_bytes(input_items)
+    native_state_bytes = _serialized_bytes(native_items)
+    tool_result_bytes = sum(_serialized_bytes(item) for item in tool_results)
+    instructions_bytes = len(instructions.encode())
+    total_top_level_bytes = instructions_bytes + tools_bytes + input_items_bytes
+    metrics: dict[str, int | bool | float] = {
+        "instructions_bytes": instructions_bytes,
+        "tools_bytes": tools_bytes,
+        "function_tool_bytes": function_tool_bytes,
+        "tool_count": len(function_tools),
+        "input_items_bytes": input_items_bytes,
+        "input_items_count": len(input_items),
+        "retained_turn_count": retained_turn_count,
+        "native_state_bytes": native_state_bytes,
+        "native_state_item_count": len(native_items),
+        "tool_result_bytes": tool_result_bytes,
+        "tool_result_count": len(tool_results),
+        "image_payload_bytes": image_payload_bytes,
+        "image_count": image_count,
+        "tool_round": round_number or 0,
+        "tools_enabled": allow_tools,
+        "is_ai_task": is_ai_task,
+    }
+    if total_top_level_bytes:
+        metrics["instructions_top_level_share"] = round(
+            instructions_bytes / total_top_level_bytes, 6
+        )
+        metrics["tools_top_level_share"] = round(tools_bytes / total_top_level_bytes, 6)
+        metrics["input_items_top_level_share"] = round(
+            input_items_bytes / total_top_level_bytes, 6
+        )
+    if input_items_bytes:
+        metrics["native_state_input_items_share"] = round(
+            native_state_bytes / input_items_bytes, 6
+        )
+        metrics["tool_result_input_items_share"] = round(
+            tool_result_bytes / input_items_bytes, 6
+        )
+        metrics["image_payload_input_items_share"] = round(
+            image_payload_bytes / input_items_bytes, 6
+        )
+    return metrics
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -126,7 +219,9 @@ class CodexAssistConversationEntity(
         )
         citations: list[CodexCitation] = []
         prompt_cache_key = _conversation_prompt_cache_key(
-            self.entry.entry_id, user_input.conversation_id or chat_log.conversation_id
+            self.entry.entry_id,
+            getattr(user_input, "conversation_id", None)
+            or getattr(chat_log, "conversation_id", None),
         )
 
         response = intent.IntentResponse(language=user_input.language)
@@ -194,6 +289,7 @@ class CodexAssistConversationEntity(
                         allow_tools=allow_tools,
                         citation_sink=citations,
                         prompt_cache_key=prompt_cache_key,
+                        round_number=_iteration + 1,
                     )
                 except CodexAuthenticationError as err:
                     LOGGER.warning(
@@ -245,6 +341,7 @@ class CodexAssistConversationEntity(
                             allow_tools=allow_tools,
                             citation_sink=citations,
                             prompt_cache_key=prompt_cache_key,
+                            round_number=_iteration + 1,
                         )
                     except CodexAuthenticationError as retry_err:
                         LOGGER.warning(
@@ -301,10 +398,12 @@ def _request_failure_text(err: BaseException) -> str:
     return request_failure_text("Codex Assist failed", err)
 
 
-def _conversation_prompt_cache_key(entry_id: str, conversation_id: str) -> str:
+def _conversation_prompt_cache_key(entry_id: str, conversation_id: object) -> str | None:
     """Return an opaque stable cache partition for one HA conversation."""
+    if not isinstance(conversation_id, str) or not conversation_id:
+        return None
     digest = hashlib.sha256(f"{entry_id}\0{conversation_id}".encode()).hexdigest()
-    return f"ha-codex-assist:{digest}"
+    return digest
 
 
 async def _run_tool_rounds(
@@ -340,6 +439,8 @@ async def _stream_codex_turn_into_chat_log(
     citation_sink: list[CodexCitation] | None = None,
     on_text_delta: Callable[[str], None] | None = None,
     prompt_cache_key: str | None = None,
+    round_number: int | None = None,
+    is_ai_task: bool = False,
 ) -> bool:
     tool_call_requested = False
 
@@ -355,6 +456,18 @@ async def _stream_codex_turn_into_chat_log(
             emitted_text = True
             if on_text_delta is not None:
                 on_text_delta(text)
+
+    LOGGER.debug(
+        "Codex Assist Responses payload metrics: %s",
+        _payload_component_metrics(
+            instructions=instructions,
+            input_items=input_items,
+            tools=tools,
+            round_number=round_number,
+            allow_tools=allow_tools,
+            is_ai_task=is_ai_task,
+        ),
+    )
 
     for attempt in range(2):
         try:
@@ -567,7 +680,11 @@ async def _codex_input_from_chat_log(
                 {
                     "type": "function_call_output",
                     "call_id": content.tool_call_id,
-                    "output": json.dumps(content.tool_result),
+                    "output": json.dumps(
+                        content.tool_result,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
                 }
             )
             continue
