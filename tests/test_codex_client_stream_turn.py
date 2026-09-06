@@ -84,6 +84,33 @@ async def test_stream_turn_yields_text_deltas_and_posts_advanced_options():
 
 
 @pytest.mark.asyncio
+async def test_stream_turn_includes_an_explicit_prompt_cache_key_only_when_present():
+    response = FakeStreamResponse(200, _event({"type": "response.completed"}))
+    http = FakeHttpClient(response)
+    client = CodexClient(http_client=http, access_token="token-1")
+
+    _ = [
+        delta
+        async for delta in client.stream_turn(
+            model="gpt-5.4",
+            instructions="private",
+            input_items=[],
+            prompt_cache_key="a" * 64,
+        )
+    ]
+    assert http.calls[0][2]["json"]["prompt_cache_key"] == "a" * 64
+
+    http.calls.clear()
+    _ = [
+        delta
+        async for delta in client.stream_turn(
+            model="gpt-5.4", instructions="private", input_items=[]
+        )
+    ]
+    assert "prompt_cache_key" not in http.calls[0][2]["json"]
+
+
+@pytest.mark.asyncio
 async def test_stream_turn_posts_structured_output_format_with_verbosity():
     response = FakeStreamResponse(200, [])
     http = FakeHttpClient(response)

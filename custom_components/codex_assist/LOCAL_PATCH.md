@@ -10,8 +10,9 @@ small seam is sufficient.
   obtains runtime limits and a prompt-cache key; applies bounded replay after
   upstream translation; records content-free request telemetry; and performs
   the one bounded pre-text retry for a tools-disabled final synthesis. Its
-  replay hook keeps at most 24 items / 128 KiB and replays images only for the
-  two newest user turns.
+  replay hook targets at most 24 items / 128 KiB of historical replay, while
+  preserving the newest complete turn intact even if it alone exceeds either
+  target; it replays images only for the two newest user turns.
 - `ai_task.py`: uses the same runtime, cache, replay, and telemetry seams as
   Conversation, including after its upstream auth-refresh retry.
 - `codex_client.py`: accepts caller-supplied generic transport timeouts,
@@ -27,7 +28,9 @@ small seam is sufficient.
 - `downstream/prompt_cache.py`: deterministic SHA-256 cache partition key.
 - `downstream/telemetry.py`: content-free payload and provider-usage metrics.
 - `downstream/llm_api_policy.py`: explicit API allowlist normalization/defaults.
-- `downstream/history_policy.py`: complete-turn replay and image replay bounds.
+- `downstream/history_policy.py`: complete-turn replay and image replay targets.
+  The 128 KiB target is not a per-tool-result hard bound: an oversized newest
+  turn remains intact until the deferred codec layer supplies that bound.
 
 No downstream runtime dependency was added; the islands use the existing
 `httpx` dependency and standard-library types only.

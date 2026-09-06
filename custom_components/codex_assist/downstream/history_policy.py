@@ -1,4 +1,4 @@
-"""Bounds for already-translated Responses replay items."""
+"""Retention targets for already-translated Responses replay items."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from typing import Any
 
 MAX_HISTORY_ITEMS = 24
+# This is a historical replay target, not a hard request or tool-result limit.
 MAX_HISTORY_BYTES = 128 * 1024
 RECENT_IMAGE_USER_TURNS = 2
 
@@ -22,7 +23,11 @@ def retain_complete_turns(
     max_items: int = MAX_HISTORY_ITEMS,
     max_bytes: int = MAX_HISTORY_BYTES,
 ) -> list[dict[str, Any]]:
-    """Keep newest complete user-led groups without splitting tool chains."""
+    """Keep newest complete user-led groups without splitting tool chains.
+
+    The newest group is always retained intact, even when it alone exceeds a
+    retention target. A future tool-result codec owns a separate hard bound.
+    """
     if len(items) <= max_items and serialized_bytes(items) <= max_bytes:
         return items
     groups: list[list[dict[str, Any]]] = []
