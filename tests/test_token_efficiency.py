@@ -119,9 +119,9 @@ def test_payload_component_metrics_are_numeric_and_content_free(conversation_mod
                 "name": "PRIVATE_TOOL_NAME",
                 "description": "PRIVATE_TOOL_DESCRIPTION",
                 "parameters": {},
-            }
+            },
+            {"type": "web_search"},
         ],
-        chat_log=FakeChatLog([FakeContent(role="user", content=user_marker)]),
         round_number=2,
         allow_tools=True,
         is_ai_task=False,
@@ -129,12 +129,60 @@ def test_payload_component_metrics_are_numeric_and_content_free(conversation_mod
 
     assert metrics["tool_count"] == 1
     assert metrics["tool_result_count"] == 1
-    assert metrics["history_turn_count"] == 1
+    assert metrics["retained_turn_count"] == 1
+    assert metrics["tools_bytes"] > metrics["function_tool_bytes"]
     assert all(not isinstance(value, str) for value in metrics.values())
     conversation_module.LOGGER.debug("Codex Assist Responses payload metrics: %s", metrics)
     assert user_marker not in caplog.text
     assert result_marker not in caplog.text
     assert "PRIVATE_TOOL_DESCRIPTION" not in caplog.text
+
+
+def test_payload_metrics_count_only_trimmed_input_items(conversation_module):
+    old_native = {
+        "id": "old-provider-item",
+        "type": "reasoning",
+        "encrypted_content": "old native state that was trimmed",
+    }
+    retained_native = {
+        "id": "retained-provider-item",
+        "type": "reasoning",
+        "encrypted_content": "retained native state",
+    }
+    input_items = [
+        {"role": "user", "content": "retained user turn"},
+        retained_native,
+        {
+            "type": "function_call_output",
+            "call_id": "call-1",
+            "output": '{"ok":true}',
+        },
+    ]
+    chat_log = FakeChatLog(
+        [
+            FakeContent(role="user", content="old user turn"),
+            FakeContent(role="assistant", native=type("Native", (), {"items": (old_native,)})()),
+            FakeContent(role="user", content="retained user turn"),
+        ]
+    )
+
+    metrics = conversation_module._payload_component_metrics(
+        instructions="final instructions",
+        input_items=input_items,
+        tools=[],
+        round_number=1,
+        allow_tools=True,
+        is_ai_task=False,
+    )
+
+    assert chat_log.content[0].content == "old user turn"
+    assert metrics["retained_turn_count"] == 1
+    assert metrics["native_state_item_count"] == 1
+    assert metrics["native_state_bytes"] == conversation_module._serialized_bytes([retained_native])
+    assert metrics["input_items_bytes"] == conversation_module._serialized_bytes(input_items)
+    assert metrics["instructions_top_level_share"] + metrics["tools_top_level_share"] + metrics[
+        "input_items_top_level_share"
+    ] == pytest.approx(1, abs=0.000001)
 
 
 def test_history_byte_budget_drops_old_complete_turn(conversation_module):

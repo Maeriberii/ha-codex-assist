@@ -92,12 +92,22 @@ def _image_payload_metrics(input_items: list[dict[str, Any]]) -> tuple[int, int]
     return image_count, image_payload_bytes
 
 
+def _native_response_items(input_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Identify replayable provider items in the final Responses input only."""
+    native_types = {"reasoning", "message", "web_search_call"}
+    return [
+        item
+        for item in input_items
+        if item.get("type") in native_types
+        or (item.get("type") == "function_call" and isinstance(item.get("id"), str))
+    ]
+
+
 def _payload_component_metrics(
     *,
     instructions: str,
     input_items: list[dict[str, Any]],
     tools: list[dict[str, Any]],
-    chat_log: conversation.ChatLog,
     round_number: int | None,
     allow_tools: bool,
     is_ai_task: bool,
@@ -105,27 +115,24 @@ def _payload_component_metrics(
     """Return content-free structural request accounting for debug telemetry."""
     function_tools = [tool for tool in tools if tool.get("type") == "function"]
     tool_results = [item for item in input_items if item.get("type") == "function_call_output"]
-    native_items: list[dict[str, Any]] = []
-    history_turn_count = 0
-    for content in chat_log.content:
-        if getattr(content, "role", None) == "user":
-            history_turn_count += 1
-        native = getattr(content, "native", None)
-        if isinstance(native, CodexNativeState):
-            native_items.extend(native.items)
+    native_items = _native_response_items(input_items)
+    retained_turn_count = sum(item.get("role") == "user" for item in input_items)
     image_count, image_payload_bytes = _image_payload_metrics(input_items)
-    tool_schema_bytes = _serialized_bytes(function_tools)
-    history_bytes = _serialized_bytes(input_items)
+    function_tool_bytes = _serialized_bytes(function_tools)
+    tools_bytes = _serialized_bytes(tools)
+    input_items_bytes = _serialized_bytes(input_items)
     native_state_bytes = _serialized_bytes(native_items)
     tool_result_bytes = sum(_serialized_bytes(item) for item in tool_results)
-    total_local_bytes = len(instructions.encode()) + history_bytes + _serialized_bytes(tools)
+    instructions_bytes = len(instructions.encode())
+    total_top_level_bytes = instructions_bytes + tools_bytes + input_items_bytes
     metrics: dict[str, int | bool | float] = {
-        "instructions_bytes": len(instructions.encode()),
-        "tool_schema_bytes": tool_schema_bytes,
+        "instructions_bytes": instructions_bytes,
+        "tools_bytes": tools_bytes,
+        "function_tool_bytes": function_tool_bytes,
         "tool_count": len(function_tools),
-        "history_bytes": history_bytes,
-        "history_item_count": len(input_items),
-        "history_turn_count": history_turn_count,
+        "input_items_bytes": input_items_bytes,
+        "input_items_count": len(input_items),
+        "retained_turn_count": retained_turn_count,
         "native_state_bytes": native_state_bytes,
         "native_state_item_count": len(native_items),
         "tool_result_bytes": tool_result_bytes,
@@ -136,10 +143,24 @@ def _payload_component_metrics(
         "tools_enabled": allow_tools,
         "is_ai_task": is_ai_task,
     }
-    if total_local_bytes:
-        metrics["tool_schema_share"] = round(tool_schema_bytes / total_local_bytes, 6)
-        metrics["history_share"] = round(history_bytes / total_local_bytes, 6)
-        metrics["native_state_share"] = round(native_state_bytes / total_local_bytes, 6)
+    if total_top_level_bytes:
+        metrics["instructions_top_level_share"] = round(
+            instructions_bytes / total_top_level_bytes, 6
+        )
+        metrics["tools_top_level_share"] = round(tools_bytes / total_top_level_bytes, 6)
+        metrics["input_items_top_level_share"] = round(
+            input_items_bytes / total_top_level_bytes, 6
+        )
+    if input_items_bytes:
+        metrics["native_state_input_items_share"] = round(
+            native_state_bytes / input_items_bytes, 6
+        )
+        metrics["tool_result_input_items_share"] = round(
+            tool_result_bytes / input_items_bytes, 6
+        )
+        metrics["image_payload_input_items_share"] = round(
+            image_payload_bytes / input_items_bytes, 6
+        )
     return metrics
 
 
@@ -442,7 +463,6 @@ async def _stream_codex_turn_into_chat_log(
             instructions=instructions,
             input_items=input_items,
             tools=tools,
-            chat_log=chat_log,
             round_number=round_number,
             allow_tools=allow_tools,
             is_ai_task=is_ai_task,
