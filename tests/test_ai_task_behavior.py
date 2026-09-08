@@ -311,8 +311,8 @@ async def test_ai_task_chat_log_retry_propagates_reauth_required(
         {"unresponded_tool_results": False, "content": [], "llm_api": None},
     )()
     monkeypatch.setattr(
-        ai_task_module,
-        "_stream_codex_turn_into_chat_log",
+        ai_task_module.turn_runtime,
+        "stream_codex_turn_into_chat_log",
         reject_access_token,
     )
 
@@ -370,8 +370,8 @@ async def test_ai_task_chat_log_retry_reauths_when_refreshed_token_is_rejected(
         {"unresponded_tool_results": False, "content": [], "llm_api": None},
     )()
     monkeypatch.setattr(
-        ai_task_module,
-        "_stream_codex_turn_into_chat_log",
+        ai_task_module.turn_runtime,
+        "stream_codex_turn_into_chat_log",
         reject_both_tokens,
     )
 
@@ -472,7 +472,7 @@ async def test_ai_task_uses_one_tools_disabled_turn_after_default_tool_rounds(
         chat_log.unresponded_tool_results = kwargs["allow_tools"]
         return kwargs["allow_tools"]
 
-    monkeypatch.setattr(ai_task_module, "_stream_codex_turn_into_chat_log", stream_turn)
+    monkeypatch.setattr(ai_task_module.turn_runtime, "stream_codex_turn_into_chat_log", stream_turn)
 
     tool = type(
         "Tool",

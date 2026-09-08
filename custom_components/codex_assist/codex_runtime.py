@@ -80,6 +80,23 @@ def runtime_token_coordinator(entry: Any) -> RuntimeTokenCoordinator:
     return coordinator
 
 
+async def refresh_runtime_tokens(
+    hass: Any,
+    entry: Any,
+    auth_client: RuntimeAuthClient,
+    tokens: CodexTokenSet,
+) -> CodexTokenSet:
+    """Refresh after a provider rejection using the entry-scoped coordinator."""
+    return await runtime_token_coordinator(entry).refresh_after_rejection(
+        lambda: entry.data,
+        rejected_tokens=tokens,
+        auth_client=auth_client,
+        async_update_entry_data=lambda data: hass.config_entries.async_update_entry(
+            entry, data=data
+        ),
+    )
+
+
 async def resolve_runtime_tokens(
     entry_data: Mapping[str, Any],
     *,

@@ -15,6 +15,7 @@ from homeassistant.helpers.httpx_client import get_async_client
 from homeassistant.util import slugify
 from homeassistant.util.json import json_loads
 
+from . import turn_runtime
 from .codex_auth import (
     CodexAuthClient,
     CodexAuthTemporaryError,
@@ -28,15 +29,7 @@ from .codex_client import (
     CodexRateLimitError,
 )
 from .codex_image import DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_SIZE, image_size_dimensions
-from .codex_runtime import runtime_token_coordinator
-from .conversation import (
-    _codex_input_from_chat_log,
-    _codex_tools_from_chat_log,
-    _instructions_from_chat_log,
-    _refresh_runtime_tokens,
-    _run_tool_rounds,
-    _stream_codex_turn_into_chat_log,
-)
+from .codex_runtime import refresh_runtime_tokens, runtime_token_coordinator
 from .error_formatting import request_failure_text
 from .schema_compat import to_openapi
 from .settings import (
@@ -49,6 +42,11 @@ from .settings import (
     RuntimePolicy,
     RuntimeSettings,
     prompt_cache_key,
+)
+from .transcript import (
+    codex_input_from_chat_log,
+    codex_tools_from_chat_log,
+    instructions_from_chat_log,
 )
 
 if TYPE_CHECKING:
@@ -316,15 +314,15 @@ async def _run_codex_ai_task_chat_log(
     async def run_tool_round(round_number: int, allow_tools: bool) -> bool:
         nonlocal codex, tokens
         try:
-            await _stream_codex_turn_into_chat_log(
+            await turn_runtime.stream_codex_turn_into_chat_log(
                 chat_log=chat_log,
                 codex=codex,
                 entity_id=entity_id,
                 model=model,
-                instructions=_instructions_from_chat_log(chat_log, prompt),
-                input_items=await _codex_input_from_chat_log(hass, chat_log),
+                instructions=instructions_from_chat_log(chat_log, prompt),
+                input_items=await codex_input_from_chat_log(hass, chat_log),
                 tools=(
-                    _codex_tools_from_chat_log(
+                    codex_tools_from_chat_log(
                         chat_log,
                         enable_web_search=_web_search_enabled(web_search, text_format=text_format),
                     )
@@ -346,7 +344,7 @@ async def _run_codex_ai_task_chat_log(
                 err,
             )
             try:
-                tokens = await _refresh_runtime_tokens(hass, entry, auth_client, tokens)
+                tokens = await refresh_runtime_tokens(hass, entry, auth_client, tokens)
             except CodexReauthRequiredError:
                 raise
             codex = CodexClient(
@@ -356,15 +354,15 @@ async def _run_codex_ai_task_chat_log(
                 image_generation_timeout=runtime_policy.image_generation_timeout,
             )
             try:
-                await _stream_codex_turn_into_chat_log(
+                await turn_runtime.stream_codex_turn_into_chat_log(
                     chat_log=chat_log,
                     codex=codex,
                     entity_id=entity_id,
                     model=model,
-                    instructions=_instructions_from_chat_log(chat_log, prompt),
-                    input_items=await _codex_input_from_chat_log(hass, chat_log),
+                    instructions=instructions_from_chat_log(chat_log, prompt),
+                    input_items=await codex_input_from_chat_log(hass, chat_log),
                     tools=(
-                        _codex_tools_from_chat_log(
+                        codex_tools_from_chat_log(
                             chat_log,
                             enable_web_search=_web_search_enabled(
                                 web_search, text_format=text_format
@@ -388,7 +386,7 @@ async def _run_codex_ai_task_chat_log(
                 ) from retry_err
         return bool(chat_log.unresponded_tool_results)
 
-    await _run_tool_rounds(
+    await turn_runtime.run_tool_rounds(
         max_tool_rounds=runtime_policy.tool_iterations,
         run_iteration=run_tool_round,
     )
@@ -412,7 +410,7 @@ async def _generate_codex_ai_task_image(
     try:
         return await codex.generate_image(
             prompt=task.instructions,
-            input_items=await _codex_input_from_chat_log(hass, chat_log),
+            input_items=await codex_input_from_chat_log(hass, chat_log),
             chat_model=chat_model,
             image_model=image_model,
             size=image_size,
@@ -423,7 +421,7 @@ async def _generate_codex_ai_task_image(
             "refreshing and retrying once: %s",
             err,
         )
-        tokens = await _refresh_runtime_tokens(hass, entry, auth_client, tokens)
+        tokens = await refresh_runtime_tokens(hass, entry, auth_client, tokens)
         runtime_policy = runtime_policy or RuntimeSettings.from_entry({}, {}).policy
         codex = CodexClient(
             http_client=get_async_client(hass),
@@ -434,7 +432,7 @@ async def _generate_codex_ai_task_image(
         try:
             return await codex.generate_image(
                 prompt=task.instructions,
-                input_items=await _codex_input_from_chat_log(hass, chat_log),
+                input_items=await codex_input_from_chat_log(hass, chat_log),
                 chat_model=chat_model,
                 image_model=image_model,
                 size=image_size,
@@ -503,9 +501,7 @@ def _apply_codex_strict_schema(schema: Any) -> None:
             _apply_codex_strict_schema(value)
 
     schema_type = schema.get("type")
-    if schema_type == "object" or (
-        isinstance(schema_type, list) and "object" in schema_type
-    ):
+    if schema_type == "object" or (isinstance(schema_type, list) and "object" in schema_type):
         schema["additionalProperties"] = False
 
 
@@ -606,7 +602,5 @@ def _remove_optional_null_values(data: Any, structure: Any) -> Any:
         ):
             del normalized[key_name]
         else:
-            normalized[key_name] = _remove_optional_null_values(
-                normalized[key_name], value_schema
-            )
+            normalized[key_name] = _remove_optional_null_values(normalized[key_name], value_schema)
     return normalized

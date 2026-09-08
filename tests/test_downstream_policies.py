@@ -4,23 +4,24 @@ import ast
 import logging
 from pathlib import Path
 
-from custom_components.codex_assist.downstream.history_policy import (
-    retain_complete_turns,
-    serialized_bytes,
+from custom_components.codex_assist.settings import (
+    has_explicit_llm_api_selection as valid_explicit_selection,
 )
-from custom_components.codex_assist.downstream.llm_api_policy import (
-    default_selection,
-    normalize_selection,
-    valid_explicit_selection,
+from custom_components.codex_assist.settings import (
+    normalize_llm_api_selection as normalize_selection,
 )
-from custom_components.codex_assist.downstream.prompt_cache import prompt_cache_key
-from custom_components.codex_assist.downstream.runtime_policy import (
-    normalize_runtime_policy,
+from custom_components.codex_assist.settings import normalize_runtime_policy, prompt_cache_key
+from custom_components.codex_assist.settings import (
+    selected_llm_apis as default_selection,
 )
-from custom_components.codex_assist.downstream.telemetry import (
+from custom_components.codex_assist.telemetry import (
     log_provider_usage,
     payload_metrics,
     provider_usage_from_event,
+)
+from custom_components.codex_assist.transcript import (
+    retain_complete_turns,
+    serialized_bytes,
 )
 
 
@@ -107,9 +108,16 @@ def test_provider_usage_is_numeric_and_content_free(caplog) -> None:
     assert "cache_hit_ratio=0.250000" in caplog.text
 
 
-def test_downstream_policies_do_not_depend_on_upstream_orchestrators() -> None:
-    downstream = Path("custom_components/codex_assist/downstream")
-    for module in downstream.glob("*.py"):
+def test_shared_runtime_modules_do_not_depend_on_home_assistant_surfaces() -> None:
+    module_names = (
+        "settings.py",
+        "transcript.py",
+        "turn_runtime.py",
+        "telemetry.py",
+        "serialization.py",
+    )
+    modules = (Path("custom_components/codex_assist") / name for name in module_names)
+    for module in modules:
         tree = ast.parse(module.read_text())
         imports = {
             alias.name.split(".")[0]
@@ -122,4 +130,4 @@ def test_downstream_policies_do_not_depend_on_upstream_orchestrators() -> None:
             for node in ast.walk(tree)
             if isinstance(node, ast.ImportFrom)
         )
-        assert not {"conversation", "ai_task", "codex_client"}.intersection(imports)
+        assert not {"conversation", "ai_task", "config_flow"}.intersection(imports)

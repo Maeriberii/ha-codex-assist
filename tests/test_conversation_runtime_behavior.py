@@ -184,8 +184,8 @@ async def test_handle_message_reports_friendly_usage_limit_without_status_code(
         lambda entry: ResolvedCoordinator(),
     )
     monkeypatch.setattr(
-        conversation_module,
-        "_stream_codex_turn_into_chat_log",
+        conversation_module.turn_runtime,
+        "stream_codex_turn_into_chat_log",
         raise_rate_limit,
     )
 

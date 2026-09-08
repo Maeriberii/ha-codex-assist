@@ -17,7 +17,7 @@ from homeassistant.helpers import intent, llm
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.httpx_client import get_async_client
 
-from . import DOMAIN
+from . import DOMAIN, turn_runtime
 from .codex_auth import (
     CodexAuthClient,
     CodexAuthTemporaryError,
@@ -37,9 +37,7 @@ from .codex_client import (
     codex_user_content_with_images,
 )
 from .codex_protocol import CodexNativeState, native_state_from_response_items
-from .codex_runtime import runtime_token_coordinator
-from .downstream.history_policy import recent_user_content_indexes, retain_complete_turns
-from .downstream.telemetry import log_payload_metrics
+from .codex_runtime import refresh_runtime_tokens, runtime_token_coordinator
 from .error_formatting import request_failure_text
 from .schema_compat import to_openapi
 from .settings import (
@@ -54,6 +52,14 @@ from .settings import (
     RuntimeSettings,
     prompt_cache_key,
     selected_llm_apis,
+)
+from .telemetry import log_payload_metrics
+from .transcript import (
+    codex_input_from_chat_log,
+    codex_tools_from_chat_log,
+    instructions_from_chat_log,
+    recent_user_content_indexes,
+    retain_complete_turns,
 )
 
 MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024
@@ -168,7 +174,7 @@ class CodexAssistConversationEntity(
             for _iteration in range(runtime_policy.tool_iterations + 1):
                 allow_tools = _iteration < runtime_policy.tool_iterations
                 try:
-                    tool_call_requested = await _stream_codex_turn_into_chat_log(
+                    tool_call_requested = await turn_runtime.stream_codex_turn_into_chat_log(
                         chat_log=chat_log,
                         codex=codex,
                         entity_id=self.entity_id or "",
@@ -176,9 +182,9 @@ class CodexAssistConversationEntity(
                         instructions=_instructions_for_turn(
                             chat_log, prompt, web_search=web_search
                         ),
-                        input_items=await _codex_input_from_chat_log(self.hass, chat_log),
+                        input_items=await codex_input_from_chat_log(self.hass, chat_log),
                         tools=(
-                            _codex_tools_from_chat_log(chat_log, enable_web_search=web_search)
+                            codex_tools_from_chat_log(chat_log, enable_web_search=web_search)
                             if allow_tools
                             else []
                         ),
@@ -196,7 +202,7 @@ class CodexAssistConversationEntity(
                         err,
                     )
                     try:
-                        tokens = await _refresh_runtime_tokens(
+                        tokens = await refresh_runtime_tokens(
                             self.hass,
                             self.entry,
                             auth_client,
@@ -220,7 +226,7 @@ class CodexAssistConversationEntity(
                         image_generation_timeout=runtime_policy.image_generation_timeout,
                     )
                     try:
-                        tool_call_requested = await _stream_codex_turn_into_chat_log(
+                        tool_call_requested = await turn_runtime.stream_codex_turn_into_chat_log(
                             chat_log=chat_log,
                             codex=codex,
                             entity_id=self.entity_id or "",
@@ -228,9 +234,9 @@ class CodexAssistConversationEntity(
                             instructions=_instructions_for_turn(
                                 chat_log, prompt, web_search=web_search
                             ),
-                            input_items=await _codex_input_from_chat_log(self.hass, chat_log),
+                            input_items=await codex_input_from_chat_log(self.hass, chat_log),
                             tools=(
-                                _codex_tools_from_chat_log(chat_log, enable_web_search=web_search)
+                                codex_tools_from_chat_log(chat_log, enable_web_search=web_search)
                                 if allow_tools
                                 else []
                             ),
@@ -542,7 +548,7 @@ def _instructions_for_turn(
     *,
     web_search: bool,
 ) -> str:
-    instructions = _instructions_from_chat_log(chat_log, fallback_prompt)
+    instructions = instructions_from_chat_log(chat_log, fallback_prompt)
     if not web_search:
         return instructions
     return f"{instructions.rstrip()}\n\n{_WEB_SEARCH_CITATION_INSTRUCTIONS}"

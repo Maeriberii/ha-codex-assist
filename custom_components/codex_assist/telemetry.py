@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 from typing import Any
+
+from .serialization import serialized_size
 
 LOGGER = logging.getLogger(__name__)
 
@@ -21,23 +22,10 @@ class ProviderUsage:
     rollout_budget_units: float | None = None
 
 
-def serialized_bytes(value: Any) -> int:
-    """Return deterministic JSON bytes without retaining payload content."""
-    return len(
-        json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
-    )
-
-
-def payload_metrics(
-    *,
-    instructions: str,
-    input_items: list[dict[str, Any]],
-    tools: list[dict[str, Any]],
-    round_number: int | None,
-    allow_tools: bool,
-    is_ai_task: bool,
-) -> dict[str, int | bool | float]:
-    """Compute numeric sizes/counts only; no payload text is returned or logged."""
+def payload_metrics(**kwargs: Any) -> dict[str, int | bool | float]:
+    instructions = kwargs["instructions"]
+    input_items = kwargs["input_items"]
+    tools = kwargs["tools"]
     function_tools = [tool for tool in tools if tool.get("type") == "function"]
     tool_results = [item for item in input_items if item.get("type") == "function_call_output"]
     native_items = [
@@ -53,28 +41,30 @@ def payload_metrics(
         for part in item["content"]
         if isinstance(part, dict) and part.get("type") == "input_image"
     ]
-    instructions_bytes = len(instructions.encode())
-    tools_bytes = serialized_bytes(tools)
-    input_bytes = serialized_bytes(input_items)
-    total = instructions_bytes + tools_bytes + input_bytes
+    instructions_bytes, tools_bytes, input_bytes = (
+        len(instructions.encode()),
+        serialized_size(tools, sort_keys=True),
+        serialized_size(input_items, sort_keys=True),
+    )
     metrics: dict[str, int | bool | float] = {
         "instructions_bytes": instructions_bytes,
         "tools_bytes": tools_bytes,
-        "function_tool_bytes": serialized_bytes(function_tools),
+        "function_tool_bytes": serialized_size(function_tools, sort_keys=True),
         "tool_count": len(function_tools),
         "input_items_bytes": input_bytes,
         "input_items_count": len(input_items),
         "retained_turn_count": sum(item.get("role") == "user" for item in input_items),
-        "native_state_bytes": serialized_bytes(native_items),
+        "native_state_bytes": serialized_size(native_items, sort_keys=True),
         "native_state_item_count": len(native_items),
-        "tool_result_bytes": sum(serialized_bytes(item) for item in tool_results),
+        "tool_result_bytes": sum(serialized_size(item, sort_keys=True) for item in tool_results),
         "tool_result_count": len(tool_results),
-        "image_payload_bytes": sum(serialized_bytes(part) for part in image_parts),
+        "image_payload_bytes": sum(serialized_size(part, sort_keys=True) for part in image_parts),
         "image_count": len(image_parts),
-        "tool_round": round_number or 0,
-        "tools_enabled": allow_tools,
-        "is_ai_task": is_ai_task,
+        "tool_round": kwargs["round_number"] or 0,
+        "tools_enabled": kwargs["allow_tools"],
+        "is_ai_task": kwargs["is_ai_task"],
     }
+    total = instructions_bytes + tools_bytes + input_bytes
     if total:
         metrics.update(
             instructions_top_level_share=round(instructions_bytes / total, 6),
@@ -91,38 +81,35 @@ def payload_metrics(
 
 
 def log_payload_metrics(**kwargs: Any) -> None:
-    """Log only content-free payload measurements."""
     LOGGER.debug("Codex Assist Responses payload metrics: %s", payload_metrics(**kwargs))
 
 
 def provider_usage_from_event(event: dict[str, Any]) -> ProviderUsage | None:
-    """Extract numeric provider counters from a completed Responses event."""
-    if event.get("type") != "response.completed":
+    if event.get("type") != "response.completed" or not isinstance(event.get("response"), dict):
         return None
-    response = event.get("response")
-    usage = response.get("usage") if isinstance(response, dict) else None
+    usage = event["response"].get("usage")
     if not isinstance(usage, dict):
         return None
-    input_details = usage.get("input_tokens_details")
-    output_details = usage.get("output_tokens_details")
-    input_details = input_details if isinstance(input_details, dict) else {}
-    output_details = output_details if isinstance(output_details, dict) else {}
+    inputs, outputs = usage.get("input_tokens_details"), usage.get("output_tokens_details")
+    inputs, outputs = (
+        inputs if isinstance(inputs, dict) else {},
+        outputs if isinstance(outputs, dict) else {},
+    )
     rollout = usage.get("codex_rollout_budget_units")
     return ProviderUsage(
-        input_tokens=_nonnegative_int(usage.get("input_tokens")),
-        cached_input_tokens=_nonnegative_int(input_details.get("cached_tokens")),
-        cache_write_input_tokens=_nonnegative_int(input_details.get("cache_write_tokens")),
-        output_tokens=_nonnegative_int(usage.get("output_tokens")),
-        reasoning_output_tokens=_nonnegative_int(output_details.get("reasoning_tokens")),
-        total_tokens=_nonnegative_int(usage.get("total_tokens")),
-        rollout_budget_units=float(rollout)
+        _counter(usage.get("input_tokens")),
+        _counter(inputs.get("cached_tokens")),
+        _counter(inputs.get("cache_write_tokens")),
+        _counter(usage.get("output_tokens")),
+        _counter(outputs.get("reasoning_tokens")),
+        _counter(usage.get("total_tokens")),
+        float(rollout)
         if not isinstance(rollout, bool) and isinstance(rollout, (int, float))
         else None,
     )
 
 
 def log_provider_usage(operation: str, usage: ProviderUsage) -> None:
-    """Log numeric provider usage without request or response content."""
     ratio = usage.cached_input_tokens / usage.input_tokens if usage.input_tokens else 0.0
     LOGGER.debug(
         "Codex %s usage input=%d cached=%d cache_hit_ratio=%.6f cache_write=%d "
@@ -139,5 +126,5 @@ def log_provider_usage(operation: str, usage: ProviderUsage) -> None:
     )
 
 
-def _nonnegative_int(value: Any) -> int:
+def _counter(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
