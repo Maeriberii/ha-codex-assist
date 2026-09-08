@@ -14,7 +14,18 @@ Use OpenAI Codex / ChatGPT as a Home Assistant Assist conversation agent and AI 
 
 Codex Assist signs in with Codex-style ChatGPT device-code auth. It keeps device control inside Home Assistant's normal exposed-entity safety model and does not require an OpenAI API key.
 
-> Experimental: this project is not affiliated with OpenAI or Home Assistant. Codex backend compatibility may change with upstream Codex updates.
+> [!WARNING]
+> **Experimental downstream fork**
+>
+> This fork contains aggressive, relatively lightly tested optimizations for
+> long, tool-heavy agent runs, with a focus on reducing context overhead and
+> improving observability and debugging of tool-call chains.
+>
+> For the most conservative and broadly tested behavior, use the
+> [upstream project](https://github.com/itsreverence/ha-codex-assist).
+
+> This project is not affiliated with OpenAI or Home Assistant.
+> Codex backend compatibility may change with upstream Codex updates.
 
 ## Quick install
 
@@ -37,14 +48,6 @@ This downstream fork is installed as a custom HACS repository. Add
 tracking upstream.
 
 ### One-time resynchronization transition
-
-The previous downstream release is `0.6.0`; this resynchronized release is
-`0.4.5+maeriberii.1`, matching its upstream base. HACS compares release versions
-and will treat this as a downgrade, so it will not offer it as a normal update.
-Back up Home Assistant, then use HACS **Redownload** and choose the explicit
-release tag (or remove and re-add this custom repository) before restarting
-Home Assistant. Existing Codex Assist configuration entries and options are
-preserved; do not delete the integration entry.
 
 Home Assistant 2026.9 changed its schema converter. Codex Assist `0.4.4` fixes
 setup failures mentioning `voluptuous_openapi` and Assist errors mentioning
