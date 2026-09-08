@@ -1,19 +1,40 @@
-"""Validated runtime limits owned by the downstream integration."""
+"""Runtime settings and normalization for Codex Assist.
+
+This module owns persisted runtime values.  Home Assistant form construction
+belongs in ``config_flow``; provider transport receives only normalized values.
+"""
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
+CONF_LLM_HASS_API = "llm_hass_api"
+CONF_PROMPT = "prompt"
+CONF_MODEL = "model"
+CONF_IMAGE_MODEL = "image_model"
+CONF_IMAGE_SIZE = "image_size"
+CONF_REASONING_EFFORT = "reasoning_effort"
+CONF_REASONING_SUMMARY = "reasoning_summary"
+CONF_TEXT_VERBOSITY = "text_verbosity"
+CONF_WEB_SEARCH = "web_search"
 CONF_TOOL_ITERATIONS = "tool_iterations"
 CONF_STREAM_CONNECT_TIMEOUT = "stream_connect_timeout"
 CONF_STREAM_WRITE_TIMEOUT = "stream_write_timeout"
 CONF_STREAM_POOL_TIMEOUT = "stream_pool_timeout"
 CONF_STREAM_READ_TIMEOUT = "stream_read_timeout"
 CONF_IMAGE_GENERATION_TIMEOUT = "image_generation_timeout"
+
+DEFAULT_MODEL = "gpt-5.4"
+DEFAULT_PROMPT = "You are a concise Home Assistant Assist conversation agent."
+DEFAULT_REASONING_EFFORT = "low"
+DEFAULT_REASONING_SUMMARY = "off"
+DEFAULT_TEXT_VERBOSITY = "medium"
+DEFAULT_WEB_SEARCH = False
 
 
 @dataclass(frozen=True)
@@ -46,7 +67,6 @@ class RuntimePolicy:
 
     @property
     def stream_timeout(self) -> httpx.Timeout:
-        """Build the transport timeout without leaking option semantics to the client."""
         return httpx.Timeout(
             connect=self.stream_connect_timeout,
             read=None if self.stream_read_timeout == 0 else self.stream_read_timeout,
@@ -55,19 +75,54 @@ class RuntimePolicy:
         )
 
 
+@dataclass(frozen=True)
+class RuntimeSettings:
+    """Normalized settings consumed by Conversation and AI Task runtime paths."""
+
+    values: Mapping[str, Any]
+    policy: RuntimePolicy
+
+    @classmethod
+    def from_entry(cls, data: Mapping[str, Any], options: Mapping[str, Any]) -> RuntimeSettings:
+        values = {**data, **options}
+        return cls(values, normalize_runtime_policy(values))
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.values.get(key, default)
+
+
 def normalize_runtime_policy(settings: Mapping[str, Any]) -> RuntimePolicy:
-    """Return safe runtime limits, repairing malformed persisted values."""
-    values = [_value_or_default(settings, spec) for spec in RUNTIME_OPTION_SPECS]
-    return RuntimePolicy(*values)
+    return RuntimePolicy(*(_value_or_default(settings, spec) for spec in RUNTIME_OPTION_SPECS))
 
 
 def invalid_runtime_option_keys(settings: Mapping[str, Any]) -> set[str]:
-    """Return explicit submitted values that fail the options boundary."""
     return {
         spec.key
         for spec in RUNTIME_OPTION_SPECS
         if spec.key in settings and not _is_valid_value(settings[spec.key], spec)
     }
+
+
+def normalize_llm_api_selection(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value else []
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(item for item in value if isinstance(item, str) and item))
+
+
+def selected_llm_apis(value: Any, *, assist_api_id: str) -> list[str]:
+    return normalize_llm_api_selection(value) or [assist_api_id]
+
+
+def has_explicit_llm_api_selection(value: Any) -> bool:
+    return bool(normalize_llm_api_selection(value))
+
+
+def prompt_cache_key(entry_id: str, stable_scope: object) -> str | None:
+    if not isinstance(stable_scope, str) or not stable_scope:
+        return None
+    return hashlib.sha256(f"{entry_id}\0{stable_scope}".encode()).hexdigest()
 
 
 def _value_or_default(settings: Mapping[str, Any], spec: RuntimeOptionSpec) -> int:

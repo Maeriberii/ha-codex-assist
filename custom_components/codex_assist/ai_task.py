@@ -29,13 +29,6 @@ from .codex_client import (
 )
 from .codex_image import DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_SIZE, image_size_dimensions
 from .codex_runtime import runtime_token_coordinator
-from .config_flow import (
-    CONF_WEB_SEARCH,
-    DEFAULT_REASONING_EFFORT,
-    DEFAULT_REASONING_SUMMARY,
-    DEFAULT_TEXT_VERBOSITY,
-    DEFAULT_WEB_SEARCH,
-)
 from .conversation import (
     _codex_input_from_chat_log,
     _codex_tools_from_chat_log,
@@ -44,10 +37,19 @@ from .conversation import (
     _run_tool_rounds,
     _stream_codex_turn_into_chat_log,
 )
-from .downstream.prompt_cache import prompt_cache_key
-from .downstream.runtime_policy import RuntimePolicy, normalize_runtime_policy
 from .error_formatting import request_failure_text
 from .schema_compat import to_openapi
+from .settings import (
+    CONF_WEB_SEARCH,
+    DEFAULT_MODEL,
+    DEFAULT_REASONING_EFFORT,
+    DEFAULT_REASONING_SUMMARY,
+    DEFAULT_TEXT_VERBOSITY,
+    DEFAULT_WEB_SEARCH,
+    RuntimePolicy,
+    RuntimeSettings,
+    prompt_cache_key,
+)
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -96,9 +98,9 @@ class CodexAssistAITaskEntity(ai_task.AITaskEntity):
         chat_log: conversation.ChatLog,
     ) -> ai_task.GenDataTaskResult:
         """Generate data from instructions and optional HA-native attachments."""
-        settings = {**self.entry.data, **self.entry.options}
-        runtime_policy = normalize_runtime_policy(settings)
-        model = settings.get("model", "gpt-5.4")
+        settings = RuntimeSettings.from_entry(self.entry.data, self.entry.options)
+        runtime_policy = settings.policy
+        model = settings.get("model", DEFAULT_MODEL)
         prompt = settings.get(
             "prompt",
             "You are a concise Home Assistant AI Task agent.",
@@ -193,9 +195,9 @@ class CodexAssistAITaskEntity(ai_task.AITaskEntity):
         chat_log: conversation.ChatLog,
     ) -> ai_task.GenImageTaskResult:
         """Generate an image from instructions and optional HA-native attachments."""
-        settings = {**self.entry.data, **self.entry.options}
-        runtime_policy = normalize_runtime_policy(settings)
-        chat_model = settings.get("model", "gpt-5.4")
+        settings = RuntimeSettings.from_entry(self.entry.data, self.entry.options)
+        runtime_policy = settings.policy
+        chat_model = settings.get("model", DEFAULT_MODEL)
         image_model = settings.get("image_model", DEFAULT_IMAGE_MODEL)
         image_size = settings.get("image_size", DEFAULT_IMAGE_SIZE)
 
@@ -306,7 +308,7 @@ async def _run_codex_ai_task_chat_log(
     runtime_policy: RuntimePolicy | None = None,
 ) -> None:
     """Run Codex over an AI Task chat log with one auth refresh retry."""
-    runtime_policy = runtime_policy or normalize_runtime_policy({})
+    runtime_policy = runtime_policy or RuntimeSettings.from_entry({}, {}).policy
     cache_key = prompt_cache_key(
         getattr(entry, "entry_id", ""), getattr(chat_log, "conversation_id", None)
     )
@@ -422,7 +424,7 @@ async def _generate_codex_ai_task_image(
             err,
         )
         tokens = await _refresh_runtime_tokens(hass, entry, auth_client, tokens)
-        runtime_policy = runtime_policy or normalize_runtime_policy({})
+        runtime_policy = runtime_policy or RuntimeSettings.from_entry({}, {}).policy
         codex = CodexClient(
             http_client=get_async_client(hass),
             access_token=tokens.access_token,

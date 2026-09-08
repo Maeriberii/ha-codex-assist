@@ -38,27 +38,24 @@ from .codex_client import (
 )
 from .codex_protocol import CodexNativeState, native_state_from_response_items
 from .codex_runtime import runtime_token_coordinator
-from .config_flow import (
+from .downstream.history_policy import recent_user_content_indexes, retain_complete_turns
+from .downstream.telemetry import log_payload_metrics
+from .error_formatting import request_failure_text
+from .schema_compat import to_openapi
+from .settings import (
+    CONF_LLM_HASS_API,
     CONF_WEB_SEARCH,
+    DEFAULT_MODEL,
+    DEFAULT_PROMPT,
     DEFAULT_REASONING_EFFORT,
     DEFAULT_REASONING_SUMMARY,
     DEFAULT_TEXT_VERBOSITY,
     DEFAULT_WEB_SEARCH,
+    RuntimeSettings,
+    prompt_cache_key,
+    selected_llm_apis,
 )
-from .downstream.history_policy import recent_user_content_indexes, retain_complete_turns
-from .downstream.llm_api_policy import default_selection
-from .downstream.prompt_cache import prompt_cache_key
-from .downstream.runtime_policy import normalize_runtime_policy
-from .downstream.telemetry import log_payload_metrics
-from .error_formatting import request_failure_text
-from .schema_compat import to_openapi
 
-try:
-    from homeassistant.const import CONF_LLM_HASS_API
-except ImportError:
-    CONF_LLM_HASS_API = "llm_hass_api"
-
-MAX_TOOL_ITERATIONS = 5
 MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_ATTACHMENTS = 4
 MAX_TOTAL_IMAGE_ATTACHMENT_BYTES = 20 * 1024 * 1024
@@ -108,18 +105,15 @@ class CodexAssistConversationEntity(
         user_input: conversation.ConversationInput,
         chat_log: conversation.ChatLog,
     ) -> conversation.ConversationResult:
-        settings = {**self.entry.data, **self.entry.options}
-        runtime_policy = normalize_runtime_policy(settings)
-        model = settings.get("model", "gpt-5.4")
-        prompt = settings.get(
-            "prompt",
-            "You are a concise Home Assistant Assist conversation agent.",
-        )
+        settings = RuntimeSettings.from_entry(self.entry.data, self.entry.options)
+        runtime_policy = settings.policy
+        model = settings.get("model", DEFAULT_MODEL)
+        prompt = settings.get("prompt", DEFAULT_PROMPT)
         reasoning_effort = settings.get("reasoning_effort", DEFAULT_REASONING_EFFORT)
         reasoning_summary = settings.get("reasoning_summary", DEFAULT_REASONING_SUMMARY)
         text_verbosity = settings.get("text_verbosity", DEFAULT_TEXT_VERBOSITY)
         web_search = bool(settings.get(CONF_WEB_SEARCH, DEFAULT_WEB_SEARCH))
-        llm_api_ids = default_selection(
+        llm_api_ids = selected_llm_apis(
             settings.get(CONF_LLM_HASS_API), assist_api_id=llm.LLM_API_ASSIST
         )
         citations: list[CodexCitation] = []

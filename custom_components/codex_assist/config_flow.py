@@ -6,7 +6,7 @@ from typing import Any
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import section
-from homeassistant.helpers import selector
+from homeassistant.helpers import llm, selector
 from homeassistant.helpers.httpx_client import get_async_client
 
 from . import DOMAIN
@@ -22,35 +22,34 @@ from .codex_image import (
     IMAGE_SIZE_OPTIONS,
 )
 from .codex_models import ModelCatalog, ModelDiscoveryCache, fetch_codex_model_ids
-from .downstream import options_policy
-from .downstream.options_policy import (
-    SECTION_RUNTIME_ORCHESTRATION,
-    async_get_llm_apis,
-    llm_api_selector,
-    runtime_options_section,
-    validate_and_normalize_options,
-)
 from .model_discovery import async_entry_model_catalog
+from .settings import (
+    CONF_IMAGE_MODEL,
+    CONF_IMAGE_SIZE,
+    CONF_LLM_HASS_API,
+    CONF_MODEL,
+    CONF_PROMPT,
+    CONF_REASONING_EFFORT,
+    CONF_REASONING_SUMMARY,
+    CONF_TEXT_VERBOSITY,
+    CONF_WEB_SEARCH,
+    DEFAULT_PROMPT,
+    DEFAULT_REASONING_EFFORT,
+    DEFAULT_TEXT_VERBOSITY,
+    DEFAULT_WEB_SEARCH,
+    RUNTIME_OPTION_SPECS,
+    has_explicit_llm_api_selection,
+    invalid_runtime_option_keys,
+    normalize_llm_api_selection,
+    selected_llm_apis,
+)
 
-CONF_LLM_HASS_API = options_policy.CONF_LLM_HASS_API
 CONF_ACCESS_TOKEN = "access_token"
-CONF_PROMPT = "prompt"
 CONF_REFRESH_TOKEN = "refresh_token"
-CONF_MODEL = "model"
-CONF_IMAGE_MODEL = "image_model"
-CONF_IMAGE_SIZE = "image_size"
-CONF_REASONING_EFFORT = "reasoning_effort"
-CONF_REASONING_SUMMARY = "reasoning_summary"
-CONF_TEXT_VERBOSITY = "text_verbosity"
-CONF_WEB_SEARCH = "web_search"
 SECTION_CHAT_SETTINGS = "chat_settings"
 SECTION_ADVANCED_SETTINGS = "advanced_settings"
 SECTION_IMAGE_SETTINGS = "image_settings"
-DEFAULT_PROMPT = "You are a concise Home Assistant Assist conversation agent."
-DEFAULT_REASONING_EFFORT = "low"
-DEFAULT_REASONING_SUMMARY = "off"
-DEFAULT_TEXT_VERBOSITY = "medium"
-DEFAULT_WEB_SEARCH = False
+SECTION_RUNTIME_ORCHESTRATION = "runtime_orchestration"
 
 
 class CodexAssistConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -239,15 +238,15 @@ class CodexAssistOptionsFlow(config_entries.OptionsFlow):
         errors = {}
         if user_input is not None:
             data = _flatten_settings_input(user_input)
-            if downstream_errors := validate_and_normalize_options(data):
+            if settings_errors := _validate_and_normalize_options(data):
                 return self.async_show_form(
                     step_id="init",
                     data_schema=_settings_schema(
                         defaults,
                         model_options=list(self._catalog.models) if self._catalog else [],
-                        llm_apis=async_get_llm_apis(self.hass),
+                        llm_apis=_async_get_llm_apis(self.hass),
                     ),
-                    errors=downstream_errors,
+                    errors=settings_errors,
                 )
             model = data.get(CONF_MODEL, defaults.get(CONF_MODEL))
             if (
@@ -272,7 +271,7 @@ class CodexAssistOptionsFlow(config_entries.OptionsFlow):
             data_schema=_settings_schema(
                 defaults,
                 model_options=list(self._catalog.models),
-                llm_apis=async_get_llm_apis(self.hass),
+                llm_apis=_async_get_llm_apis(self.hass),
             ),
             errors=errors,
             description_placeholders={
@@ -307,9 +306,9 @@ def _settings_schema(
         ): _low_medium_high_selector(),
     }
     if llm_apis is not None:
-        advanced_settings.update(llm_api_selector(defaults, llm_apis))
+        advanced_settings.update(_llm_api_selector(defaults, llm_apis))
 
-    runtime_section_key, runtime_section = runtime_options_section(defaults)
+    runtime_section_key, runtime_section = _runtime_options_section(defaults)
     return vol.Schema(
         {
             vol.Required(SECTION_CHAT_SETTINGS): section(
@@ -387,6 +386,70 @@ def _flatten_settings_input(user_input: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(section_data, Mapping):
             settings.update(section_data)
     return settings
+
+
+def _async_get_llm_apis(hass: Any) -> list[llm.API]:
+    """Use the public API when present; retain contract-test compatibility."""
+    getter = getattr(llm, "async_get_apis", None)
+    return getter(hass) if getter is not None else []
+
+
+def _llm_api_selector(defaults: Mapping[str, Any], llm_apis: list[llm.API]) -> dict[Any, Any]:
+    return {
+        vol.Optional(
+            CONF_LLM_HASS_API,
+            default=selected_llm_apis(
+                defaults.get(CONF_LLM_HASS_API), assist_api_id=llm.LLM_API_ASSIST
+            ),
+        ): selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=[
+                    selector.SelectOptionDict(value=api.id, label=api.name) for api in llm_apis
+                ],
+                mode=selector.SelectSelectorMode.DROPDOWN,
+                multiple=True,
+            )
+        )
+    }
+
+
+def _runtime_options_section(defaults: Mapping[str, Any]) -> tuple[Any, Any]:
+    return (
+        vol.Optional(SECTION_RUNTIME_ORCHESTRATION),
+        section(
+            vol.Schema(
+                {
+                    vol.Optional(spec.key, default=defaults.get(spec.key, spec.default)):
+                    _number_selector(spec)
+                    for spec in RUNTIME_OPTION_SPECS
+                }
+            ),
+            {"collapsed": True},
+        ),
+    )
+
+
+def _validate_and_normalize_options(data: dict[str, Any]) -> dict[str, str]:
+    errors = {key: "value_out_of_range" for key in invalid_runtime_option_keys(data)}
+    if CONF_LLM_HASS_API not in data:
+        return errors
+    if not has_explicit_llm_api_selection(data[CONF_LLM_HASS_API]):
+        errors[CONF_LLM_HASS_API] = "select_at_least_one_llm_api"
+    else:
+        data[CONF_LLM_HASS_API] = normalize_llm_api_selection(data[CONF_LLM_HASS_API])
+    return errors
+
+
+def _number_selector(spec: Any) -> selector.NumberSelector:
+    config: dict[str, Any] = {
+        "min": spec.minimum,
+        "max": spec.maximum,
+        "step": 1,
+        "mode": "box",
+    }
+    if spec.unit is not None:
+        config["unit_of_measurement"] = spec.unit
+    return selector.NumberSelector(selector.NumberSelectorConfig(**config))
 
 
 def _low_medium_high_selector() -> selector.SelectSelector:
