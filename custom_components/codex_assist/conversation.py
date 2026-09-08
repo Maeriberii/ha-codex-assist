@@ -11,7 +11,7 @@ from homeassistant.helpers import intent, llm
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.httpx_client import get_async_client
 
-from . import DOMAIN, serialization, telemetry, transcript, turn_runtime  # noqa: F401
+from . import DOMAIN, turn_runtime
 from .codex_auth import (
     CodexAuthClient,
     CodexAuthTemporaryError,
@@ -44,18 +44,6 @@ from .transcript import (
     instructions_from_chat_log,
 )
 
-try:
-    from homeassistant.const import CONF_LLM_HASS_API
-except ImportError:
-    CONF_LLM_HASS_API = "llm_hass_api"
-
-MAX_TOOL_ITERATIONS = 5
-MAX_CODEX_INPUT_ITEMS = 24
-MAX_CODEX_HISTORY_BYTES = 128 * 1024
-IMAGE_HISTORY_USER_TURNS = 2
-MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024
-MAX_IMAGE_ATTACHMENTS = 4
-MAX_TOTAL_IMAGE_ATTACHMENT_BYTES = 20 * 1024 * 1024
 LOGGER = logging.getLogger(__name__)
 _WEB_SEARCH_CITATION_INSTRUCTIONS = (
     "When using web search, do not include raw URLs, markdown links, or a Source/Sources "

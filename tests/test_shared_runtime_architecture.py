@@ -48,3 +48,40 @@ def test_conversation_has_no_duplicate_shared_helpers() -> None:
         "_refresh_runtime_tokens",
         "_instructions_from_chat_log",
     }
+
+
+def test_conversation_does_not_reexport_shared_runtime_modules() -> None:
+    tree = ast.parse((PACKAGE / "conversation.py").read_text())
+    reexports = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.level and node.module is None
+        for alias in node.names
+    }
+    assert not reexports & {"telemetry", "serialization", "transcript"}
+
+
+def test_config_flow_does_not_redefine_shared_settings() -> None:
+    tree = ast.parse((PACKAGE / "config_flow.py").read_text())
+    assigned = {
+        target.id
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    assert not assigned & {
+        "CONF_PROMPT",
+        "CONF_MODEL",
+        "CONF_IMAGE_MODEL",
+        "CONF_IMAGE_SIZE",
+        "CONF_REASONING_EFFORT",
+        "CONF_REASONING_SUMMARY",
+        "CONF_TEXT_VERBOSITY",
+        "CONF_WEB_SEARCH",
+        "DEFAULT_PROMPT",
+        "DEFAULT_REASONING_EFFORT",
+        "DEFAULT_REASONING_SUMMARY",
+        "DEFAULT_TEXT_VERBOSITY",
+        "DEFAULT_WEB_SEARCH",
+    }

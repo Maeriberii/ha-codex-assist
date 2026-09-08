@@ -24,32 +24,28 @@ from .codex_image import (
 from .codex_models import ModelCatalog, ModelDiscoveryCache, fetch_codex_model_ids
 from .model_discovery import async_entry_model_catalog
 from .runtime_options import RUNTIME_OPTION_SPECS, RuntimeOptionSpec, invalid_runtime_options
-
-try:
-    from homeassistant.const import CONF_LLM_HASS_API
-except ImportError:
-    # The options key predates the public Home Assistant constant.
-    CONF_LLM_HASS_API = "llm_hass_api"
+from .settings import (
+    CONF_IMAGE_MODEL,
+    CONF_IMAGE_SIZE,
+    CONF_LLM_HASS_API,
+    CONF_MODEL,
+    CONF_PROMPT,
+    CONF_REASONING_EFFORT,
+    CONF_REASONING_SUMMARY,
+    CONF_TEXT_VERBOSITY,
+    CONF_WEB_SEARCH,
+    DEFAULT_PROMPT,
+    DEFAULT_REASONING_EFFORT,
+    DEFAULT_TEXT_VERBOSITY,
+    DEFAULT_WEB_SEARCH,
+)
 
 CONF_ACCESS_TOKEN = "access_token"
-CONF_PROMPT = "prompt"
 CONF_REFRESH_TOKEN = "refresh_token"
-CONF_MODEL = "model"
-CONF_IMAGE_MODEL = "image_model"
-CONF_IMAGE_SIZE = "image_size"
-CONF_REASONING_EFFORT = "reasoning_effort"
-CONF_REASONING_SUMMARY = "reasoning_summary"
-CONF_TEXT_VERBOSITY = "text_verbosity"
-CONF_WEB_SEARCH = "web_search"
 SECTION_CHAT_SETTINGS = "chat_settings"
 SECTION_ADVANCED_SETTINGS = "advanced_settings"
 SECTION_IMAGE_SETTINGS = "image_settings"
 SECTION_RUNTIME_ORCHESTRATION = "runtime_orchestration"
-DEFAULT_PROMPT = "You are a concise Home Assistant Assist conversation agent."
-DEFAULT_REASONING_EFFORT = "low"
-DEFAULT_REASONING_SUMMARY = "off"
-DEFAULT_TEXT_VERBOSITY = "medium"
-DEFAULT_WEB_SEARCH = False
 
 
 class CodexAssistConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):

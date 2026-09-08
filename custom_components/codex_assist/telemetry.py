@@ -3,23 +3,11 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from typing import Any
 
 from .serialization import serialized_size
 
 LOGGER = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class ProviderUsage:
-    input_tokens: int
-    cached_input_tokens: int
-    cache_write_input_tokens: int
-    output_tokens: int
-    reasoning_output_tokens: int
-    total_tokens: int
-    rollout_budget_units: float | None = None
 
 
 def payload_metrics(**kwargs: Any) -> dict[str, int | bool | float]:
@@ -82,49 +70,3 @@ def payload_metrics(**kwargs: Any) -> dict[str, int | bool | float]:
 
 def log_payload_metrics(**kwargs: Any) -> None:
     LOGGER.debug("Codex Assist Responses payload metrics: %s", payload_metrics(**kwargs))
-
-
-def provider_usage_from_event(event: dict[str, Any]) -> ProviderUsage | None:
-    if event.get("type") != "response.completed" or not isinstance(event.get("response"), dict):
-        return None
-    usage = event["response"].get("usage")
-    if not isinstance(usage, dict):
-        return None
-    inputs, outputs = usage.get("input_tokens_details"), usage.get("output_tokens_details")
-    inputs, outputs = (
-        inputs if isinstance(inputs, dict) else {},
-        outputs if isinstance(outputs, dict) else {},
-    )
-    rollout = usage.get("codex_rollout_budget_units")
-    return ProviderUsage(
-        _counter(usage.get("input_tokens")),
-        _counter(inputs.get("cached_tokens")),
-        _counter(inputs.get("cache_write_tokens")),
-        _counter(usage.get("output_tokens")),
-        _counter(outputs.get("reasoning_tokens")),
-        _counter(usage.get("total_tokens")),
-        float(rollout)
-        if not isinstance(rollout, bool) and isinstance(rollout, (int, float))
-        else None,
-    )
-
-
-def log_provider_usage(operation: str, usage: ProviderUsage) -> None:
-    ratio = usage.cached_input_tokens / usage.input_tokens if usage.input_tokens else 0.0
-    LOGGER.debug(
-        "Codex %s usage input=%d cached=%d cache_hit_ratio=%.6f cache_write=%d "
-        "output=%d reasoning=%d total=%d rollout_budget=%s",
-        operation,
-        usage.input_tokens,
-        usage.cached_input_tokens,
-        ratio,
-        usage.cache_write_input_tokens,
-        usage.output_tokens,
-        usage.reasoning_output_tokens,
-        usage.total_tokens,
-        usage.rollout_budget_units,
-    )
-
-
-def _counter(value: Any) -> int:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
