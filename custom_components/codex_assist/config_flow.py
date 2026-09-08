@@ -311,23 +311,24 @@ def _settings_schema(
         image_size_default = DEFAULT_IMAGE_SIZE
 
     advanced_settings: dict[Any, Any] = {
-        vol.Optional(CONF_PROMPT, default=defaults.get(CONF_PROMPT, DEFAULT_PROMPT)):
-            selector.TextSelector(selector.TextSelectorConfig(multiline=True)),
+        vol.Optional(
+            CONF_PROMPT, default=defaults.get(CONF_PROMPT, DEFAULT_PROMPT)
+        ): selector.TextSelector(selector.TextSelectorConfig(multiline=True)),
         vol.Optional(
             CONF_REASONING_EFFORT,
             default=defaults.get(CONF_REASONING_EFFORT, DEFAULT_REASONING_EFFORT),
         ): _low_medium_high_selector(),
     }
     if llm_apis is not None:
-        advanced_settings[vol.Optional(
-            CONF_LLM_HASS_API, default=_llm_api_default(defaults)
-        )] = selector.SelectSelector(
-            selector.SelectSelectorConfig(
-                options=[
-                    selector.SelectOptionDict(value=api.id, label=api.name) for api in llm_apis
-                ],
-                mode=selector.SelectSelectorMode.DROPDOWN,
-                multiple=True,
+        advanced_settings[vol.Optional(CONF_LLM_HASS_API, default=_llm_api_default(defaults))] = (
+            selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[
+                        selector.SelectOptionDict(value=api.id, label=api.name) for api in llm_apis
+                    ],
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                    multiple=True,
+                )
             )
         )
 
@@ -377,11 +378,14 @@ def _settings_schema(
                 {"collapsed": True},
             ),
             vol.Optional(SECTION_RUNTIME_ORCHESTRATION): section(
-                vol.Schema({
-                    vol.Optional(spec.key, default=defaults.get(spec.key, spec.default)):
-                        _number_selector(spec)
-                    for spec in RUNTIME_OPTION_SPECS
-                }),
+                vol.Schema(
+                    {
+                        vol.Optional(
+                            spec.key, default=defaults.get(spec.key, spec.default)
+                        ): _number_selector(spec)
+                        for spec in RUNTIME_OPTION_SPECS
+                    }
+                ),
                 {"collapsed": True},
             ),
         }
@@ -390,7 +394,9 @@ def _settings_schema(
 
 def _number_selector(spec: RuntimeOptionSpec) -> selector.NumberSelector:
     config: dict[str, Any] = {
-        "min": spec.minimum, "max": spec.maximum, "step": 1,
+        "min": spec.minimum,
+        "max": spec.maximum,
+        "step": 1,
         "mode": selector.NumberSelectorMode.BOX,
     }
     if spec.unit is not None:
@@ -414,11 +420,7 @@ def _llm_api_default(defaults: dict[str, Any]) -> list[str]:
 def _model_schema(defaults: dict[str, Any], *, model_options: list[str]) -> vol.Schema:
     model_options = list(dict.fromkeys(model_options))
     saved_model = defaults.get(CONF_MODEL)
-    model_default = (
-        saved_model
-        if saved_model in model_options
-        else next(iter(model_options), None)
-    )
+    model_default = saved_model if saved_model in model_options else next(iter(model_options), None)
     if not model_options:
         return vol.Schema({})
     return vol.Schema(

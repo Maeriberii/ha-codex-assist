@@ -8,9 +8,7 @@ from tests.ha_fakes import install_homeassistant_fakes
 
 def _load_diagnostics(monkeypatch):
     install_homeassistant_fakes(monkeypatch)
-    return importlib.reload(
-        importlib.import_module("custom_components.codex_assist.diagnostics")
-    )
+    return importlib.reload(importlib.import_module("custom_components.codex_assist.diagnostics"))
 
 
 async def test_diagnostics_redacts_tokens_but_keeps_settings(monkeypatch):

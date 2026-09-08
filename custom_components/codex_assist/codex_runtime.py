@@ -80,6 +80,23 @@ def runtime_token_coordinator(entry: Any) -> RuntimeTokenCoordinator:
     return coordinator
 
 
+async def refresh_runtime_tokens(
+    hass: Any,
+    entry: Any,
+    auth_client: RuntimeAuthClient,
+    tokens: CodexTokenSet,
+) -> CodexTokenSet:
+    """Refresh a rejected token through the entry-scoped coordinator."""
+    return await runtime_token_coordinator(entry).refresh_after_rejection(
+        lambda: entry.data,
+        rejected_tokens=tokens,
+        auth_client=auth_client,
+        async_update_entry_data=lambda data: hass.config_entries.async_update_entry(
+            entry, data=data
+        ),
+    )
+
+
 async def resolve_runtime_tokens(
     entry_data: Mapping[str, Any],
     *,
@@ -157,7 +174,7 @@ def _decode_jwt_exp(access_token: str) -> float | None:
     try:
         payload_bytes = base64.urlsafe_b64decode((payload_segment + padding).encode())
         payload = json.loads(payload_bytes.decode())
-    except (ValueError, json.JSONDecodeError):
+    except ValueError, json.JSONDecodeError:
         return None
     exp = payload.get("exp")
     if not isinstance(exp, (int, float)):

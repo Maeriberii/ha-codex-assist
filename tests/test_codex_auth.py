@@ -32,9 +32,9 @@ class FakeHttpClient:
 
 @pytest.mark.asyncio
 async def test_refresh_uses_openai_token_endpoint_and_returns_new_tokens():
-    http = FakeHttpClient([
-        FakeResponse(200, {"access_token": "access-2", "refresh_token": "refresh-2"})
-    ])
+    http = FakeHttpClient(
+        [FakeResponse(200, {"access_token": "access-2", "refresh_token": "refresh-2"})]
+    )
     client = CodexAuthClient(http_client=http)
 
     tokens = await client.refresh(CodexTokenSet(access_token="access-1", refresh_token="refresh-1"))

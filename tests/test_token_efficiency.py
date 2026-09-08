@@ -62,20 +62,16 @@ def conversation_module(monkeypatch):
 
 
 def test_conversation_prompt_cache_key_is_stable_opaque_and_scoped(conversation_module):
-    first = conversation_module._conversation_prompt_cache_key("entry-private", "conversation-a")
-    repeated = conversation_module._conversation_prompt_cache_key(
-        "entry-private", "conversation-a"
-    )
-    other = conversation_module._conversation_prompt_cache_key(
-        "entry-private", "conversation-b"
-    )
+    first = conversation_module.prompt_cache_key("entry-private", "conversation-a")
+    repeated = conversation_module.prompt_cache_key("entry-private", "conversation-a")
+    other = conversation_module.prompt_cache_key("entry-private", "conversation-b")
 
     assert first == repeated
     assert first != other
     assert len(first) == 64
     assert "entry-private" not in first
     assert "conversation-a" not in first
-    assert conversation_module._conversation_prompt_cache_key("entry-private", None) is None
+    assert conversation_module.prompt_cache_key("entry-private", None) is None
 
 
 @pytest.mark.asyncio
@@ -83,7 +79,7 @@ async def test_stream_turn_forwards_prompt_cache_key_when_present(conversation_m
     codex = FakeCodex()
     chat_log = FakeChatLog()
 
-    await conversation_module._stream_codex_turn_into_chat_log(
+    await conversation_module.turn_runtime.stream_codex_turn_into_chat_log(
         chat_log=chat_log,
         codex=codex,
         entity_id="conversation.codex_assist",
@@ -103,7 +99,7 @@ async def test_stream_turn_forwards_prompt_cache_key_when_present(conversation_m
 def test_payload_component_metrics_are_numeric_and_content_free(conversation_module, caplog):
     user_marker = "PRIVATE_USER_MARKER"
     result_marker = "PRIVATE_RESULT_MARKER"
-    metrics = conversation_module._payload_component_metrics(
+    metrics = conversation_module.telemetry.payload_metrics(
         instructions="PRIVATE_INSTRUCTIONS_MARKER",
         input_items=[
             {"role": "user", "content": user_marker},
@@ -166,7 +162,7 @@ def test_payload_metrics_count_only_trimmed_input_items(conversation_module):
         ]
     )
 
-    metrics = conversation_module._payload_component_metrics(
+    metrics = conversation_module.telemetry.payload_metrics(
         instructions="final instructions",
         input_items=input_items,
         tools=[],
@@ -178,8 +174,12 @@ def test_payload_metrics_count_only_trimmed_input_items(conversation_module):
     assert chat_log.content[0].content == "old user turn"
     assert metrics["retained_turn_count"] == 1
     assert metrics["native_state_item_count"] == 1
-    assert metrics["native_state_bytes"] == conversation_module._serialized_bytes([retained_native])
-    assert metrics["input_items_bytes"] == conversation_module._serialized_bytes(input_items)
+    assert metrics["native_state_bytes"] == conversation_module.serialization.serialized_size(
+        [retained_native], sort_keys=True
+    )
+    assert metrics["input_items_bytes"] == conversation_module.serialization.serialized_size(
+        input_items, sort_keys=True
+    )
     assert metrics["instructions_top_level_share"] + metrics["tools_top_level_share"] + metrics[
         "input_items_top_level_share"
     ] == pytest.approx(1, abs=0.000001)
@@ -193,7 +193,7 @@ def test_history_byte_budget_drops_old_complete_turn(conversation_module):
     current_turn = [{"role": "user", "content": "latest"}]
     items = [*old_turn, *current_turn]
 
-    result = conversation_module._trim_codex_input_items(
+    result = conversation_module.transcript.retain_complete_turns(
         items,
         max_items=24,
         max_bytes=100,
@@ -208,7 +208,7 @@ def test_history_byte_budget_never_splits_or_rejects_current_turn(conversation_m
         {"role": "assistant", "content": "x" * 500},
     ]
 
-    result = conversation_module._trim_codex_input_items(
+    result = conversation_module.transcript.retain_complete_turns(
         current_turn,
         max_items=24,
         max_bytes=50,
@@ -241,7 +241,7 @@ async def test_old_image_payloads_are_not_replayed_indefinitely(
         contents.append(FakeContent(role="assistant", content=f"reply {index}"))
 
     hass = FakeHass()
-    result = await conversation_module._codex_input_from_chat_log(
+    result = await conversation_module.transcript.codex_input_from_chat_log(
         hass,
         FakeChatLog(contents),
     )

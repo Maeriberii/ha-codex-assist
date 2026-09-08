@@ -6,9 +6,7 @@ from typing import Any, Protocol
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_OAUTH_REDIRECT_URI = "https://auth.openai.com/deviceauth/callback"
-CODEX_DEVICE_AUTH_USER_CODE_URL = (
-    "https://auth.openai.com/api/accounts/deviceauth/usercode"
-)
+CODEX_DEVICE_AUTH_USER_CODE_URL = "https://auth.openai.com/api/accounts/deviceauth/usercode"
 CODEX_DEVICE_AUTH_TOKEN_URL = "https://auth.openai.com/api/accounts/deviceauth/token"
 CODEX_DEVICE_VERIFICATION_URL = "https://auth.openai.com/codex/device"
 
@@ -115,9 +113,7 @@ class CodexAuthClient:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         if response.status_code != 200:
-            raise RuntimeError(
-                f"Codex token exchange failed with status {response.status_code}"
-            )
+            raise RuntimeError(f"Codex token exchange failed with status {response.status_code}")
         return _token_set_from_payload(response.json(), require_refresh=True)
 
     async def refresh(self, tokens: CodexTokenSet) -> CodexTokenSet:
@@ -141,7 +137,7 @@ class CodexAuthClient:
 def _positive_int(value: Any, *, default: int) -> int:
     try:
         parsed = int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
     return parsed if parsed > 0 else default
 

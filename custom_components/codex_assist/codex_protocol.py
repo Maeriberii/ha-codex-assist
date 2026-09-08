@@ -60,9 +60,7 @@ def native_state_from_response_items(
     items: Iterable[dict[str, Any]],
 ) -> CodexNativeState | None:
     """Own replayable typed Responses items without trusting outside mutation."""
-    accepted = tuple(
-        item for item in items if isinstance(item.get("type"), str) and item["type"]
-    )
+    accepted = tuple(item for item in items if isinstance(item.get("type"), str) and item["type"])
     has_assistant_output = any(
         item.get("type") in {"function_call", "message"} for item in accepted
     )

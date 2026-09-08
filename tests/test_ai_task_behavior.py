@@ -103,18 +103,12 @@ def test_structured_data_from_text_preserves_required_nullable_value(ai_task_mod
         {ai_task_module.vol.Required("value"): ai_task_module.vol.Any(str, None)}
     )
 
-    assert ai_task_module._structured_data_from_text('{"value":null}', structure) == {
-        "value": None
-    }
+    assert ai_task_module._structured_data_from_text('{"value":null}', structure) == {"value": None}
 
 
 def test_structured_data_from_text_removes_null_composed_key_placeholder(ai_task_module):
     structure = ai_task_module.vol.Schema(
-        {
-            ai_task_module.vol.Required(
-                ai_task_module.vol.Any("email", "phone")
-            ): str
-        }
+        {ai_task_module.vol.Required(ai_task_module.vol.Any("email", "phone")): str}
     )
 
     assert ai_task_module._structured_data_from_text(
@@ -311,8 +305,8 @@ async def test_ai_task_chat_log_retry_propagates_reauth_required(
         {"unresponded_tool_results": False, "content": [], "llm_api": None},
     )()
     monkeypatch.setattr(
-        ai_task_module,
-        "_stream_codex_turn_into_chat_log",
+        ai_task_module.turn_runtime,
+        "stream_codex_turn_into_chat_log",
         reject_access_token,
     )
 
@@ -370,8 +364,8 @@ async def test_ai_task_chat_log_retry_reauths_when_refreshed_token_is_rejected(
         {"unresponded_tool_results": False, "content": [], "llm_api": None},
     )()
     monkeypatch.setattr(
-        ai_task_module,
-        "_stream_codex_turn_into_chat_log",
+        ai_task_module.turn_runtime,
+        "stream_codex_turn_into_chat_log",
         reject_both_tokens,
     )
 
@@ -472,7 +466,7 @@ async def test_ai_task_uses_one_tools_disabled_turn_after_configured_tool_rounds
         chat_log.unresponded_tool_results = kwargs["allow_tools"]
         return kwargs["allow_tools"]
 
-    monkeypatch.setattr(ai_task_module, "_stream_codex_turn_into_chat_log", stream_turn)
+    monkeypatch.setattr(ai_task_module.turn_runtime, "stream_codex_turn_into_chat_log", stream_turn)
 
     tool = type(
         "Tool",
@@ -523,7 +517,7 @@ async def test_ai_task_reuses_one_opaque_cache_key_for_tool_rounds(ai_task_modul
         chat_log.unresponded_tool_results = len(calls) == 1
         return chat_log.unresponded_tool_results
 
-    monkeypatch.setattr(ai_task_module, "_stream_codex_turn_into_chat_log", stream_turn)
+    monkeypatch.setattr(ai_task_module.turn_runtime, "stream_codex_turn_into_chat_log", stream_turn)
     chat_log = type(
         "ChatLog",
         (),

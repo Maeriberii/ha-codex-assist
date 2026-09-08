@@ -112,20 +112,25 @@ async def test_generate_turn_posts_tools_and_extracts_function_call():
 
 @pytest.mark.asyncio
 async def test_generate_text_extracts_concatenated_output_text_items():
-    http = FakeHttpClient([
-        FakeResponse(
-            200,
-            {
-                "output": [
-                    {"type": "reasoning", "summary": []},
-                    {"type": "message", "content": [
-                        {"type": "output_text", "text": "First"},
-                        {"type": "output_text", "text": " second."},
-                    ]},
-                ]
-            },
-        )
-    ])
+    http = FakeHttpClient(
+        [
+            FakeResponse(
+                200,
+                {
+                    "output": [
+                        {"type": "reasoning", "summary": []},
+                        {
+                            "type": "message",
+                            "content": [
+                                {"type": "output_text", "text": "First"},
+                                {"type": "output_text", "text": " second."},
+                            ],
+                        },
+                    ]
+                },
+            )
+        ]
+    )
     client = CodexClient(http_client=http, access_token="token-1")
 
     result = await client.generate_text(
@@ -152,17 +157,19 @@ async def test_generate_turn_raises_rate_limit_error_for_429():
 
 @pytest.mark.asyncio
 async def test_generate_turn_raises_rate_limit_error_for_usage_limit_code():
-    http = FakeHttpClient([
-        FakeResponse(
-            403,
-            {
-                "detail": {
-                    "code": "usage_limit_reached",
-                    "message": "Monthly usage limit reached",
-                }
-            },
-        )
-    ])
+    http = FakeHttpClient(
+        [
+            FakeResponse(
+                403,
+                {
+                    "detail": {
+                        "code": "usage_limit_reached",
+                        "message": "Monthly usage limit reached",
+                    }
+                },
+            )
+        ]
+    )
     client = CodexClient(http_client=http, access_token="token-1")
 
     with pytest.raises(CodexRateLimitError, match="Monthly usage limit reached"):
@@ -175,17 +182,19 @@ async def test_generate_turn_raises_rate_limit_error_for_usage_limit_code():
 
 @pytest.mark.asyncio
 async def test_generate_text_raises_auth_error_for_invalidated_token():
-    http = FakeHttpClient([
-        FakeResponse(
-            401,
-            {
-                "error": {
-                    "message": "Your authentication token has been invalidated.",
-                    "code": "token_invalidated",
-                }
-            },
-        )
-    ])
+    http = FakeHttpClient(
+        [
+            FakeResponse(
+                401,
+                {
+                    "error": {
+                        "message": "Your authentication token has been invalidated.",
+                        "code": "token_invalidated",
+                    }
+                },
+            )
+        ]
+    )
     client = CodexClient(http_client=http, access_token="token-1")
 
     with pytest.raises(CodexAuthenticationError, match="token has been invalidated"):

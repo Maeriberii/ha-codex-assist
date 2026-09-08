@@ -100,9 +100,7 @@ class CodexResponseItemDelta:
     item: dict[str, Any]
 
 
-CodexStreamDelta = (
-    CodexTextDelta | CodexToolCallDelta | CodexCitationDelta | CodexResponseItemDelta
-)
+CodexStreamDelta = CodexTextDelta | CodexToolCallDelta | CodexCitationDelta | CodexResponseItemDelta
 
 
 class CodexClient:
@@ -551,9 +549,7 @@ def _usage_from_event(event: dict[str, Any]) -> CodexUsage | None:
     if not isinstance(output_details, dict):
         output_details = {}
     rollout_budget_units = usage.get("codex_rollout_budget_units")
-    if isinstance(rollout_budget_units, bool) or not isinstance(
-        rollout_budget_units, (int, float)
-    ):
+    if isinstance(rollout_budget_units, bool) or not isinstance(rollout_budget_units, (int, float)):
         rollout_budget_units = None
     return CodexUsage(
         input_tokens=_nonnegative_int(usage.get("input_tokens")),
@@ -571,9 +567,7 @@ def _nonnegative_int(value: Any) -> int:
 
 
 def _log_usage(operation: str, usage: CodexUsage) -> None:
-    cache_hit_ratio = (
-        usage.cached_input_tokens / usage.input_tokens if usage.input_tokens else 0.0
-    )
+    cache_hit_ratio = usage.cached_input_tokens / usage.input_tokens if usage.input_tokens else 0.0
     LOGGER.debug(
         "Codex %s usage input=%d cached=%d cache_hit_ratio=%.6f cache_write=%d "
         "output=%d reasoning=%d total=%d rollout_budget=%s",
@@ -589,9 +583,7 @@ def _log_usage(operation: str, usage: CodexUsage) -> None:
     )
 
 
-def _function_call_item_key(
-    item: dict[str, Any], event: dict[str, Any]
-) -> str | None:
+def _function_call_item_key(item: dict[str, Any], event: dict[str, Any]) -> str | None:
     for value in (
         item.get("id"),
         event.get("item_id"),
@@ -736,7 +728,7 @@ def _response_error(response: Any) -> CodexResponseError:
     text = getattr(response, "text", "") or ""
     try:
         payload = json.loads(text) if text else response.json()
-    except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
+    except json.JSONDecodeError, ValueError, TypeError, AttributeError:
         return CodexResponseError(text[:500] if text else "unknown error")
     if isinstance(payload, dict):
         detail = payload.get("detail") or payload.get("message") or payload.get("error")
