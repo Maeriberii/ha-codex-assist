@@ -279,9 +279,7 @@ async def test_stream_turn_correlates_interleaved_function_call_arguments_by_ite
         )
     ]
 
-    tool_calls = [
-        delta.tool_call for delta in deltas if isinstance(delta, CodexToolCallDelta)
-    ]
+    tool_calls = [delta.tool_call for delta in deltas if isinstance(delta, CodexToolCallDelta)]
     assert [(call.id, call.name, call.arguments) for call in tool_calls] == [
         ("call-2", "HassSetPosition", {"name": "Shade", "position": 50}),
         ("call-1", "HassTurnOn", {"name": "Kitchen", "domain": "light"}),
@@ -488,10 +486,7 @@ async def test_stream_turn_preserves_output_item_done_payloads_exactly():
     response = FakeStreamResponse(
         200,
         sum(
-            (
-                _event({"type": "response.output_item.done", "item": item})
-                for item in output_items
-            ),
+            (_event({"type": "response.output_item.done", "item": item}) for item in output_items),
             [],
         ),
     )

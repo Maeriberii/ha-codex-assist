@@ -1,16 +1,9 @@
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import json
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import Any
-from urllib.parse import urlsplit
 
 import httpx
 from homeassistant.components import conversation
-from homeassistant.components.conversation import AssistantContentDeltaDict
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import MATCH_ALL
 from homeassistant.core import HomeAssistant
@@ -18,150 +11,45 @@ from homeassistant.helpers import intent, llm
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.httpx_client import get_async_client
 
-from . import DOMAIN
+from . import DOMAIN, turn_runtime
 from .codex_auth import (
     CodexAuthClient,
     CodexAuthTemporaryError,
     CodexReauthRequiredError,
-    CodexTokenSet,
 )
 from .codex_client import (
     CodexAuthenticationError,
     CodexCitation,
-    CodexCitationDelta,
     CodexClient,
     CodexRateLimitError,
-    CodexResponseItemDelta,
-    CodexStreamDelta,
-    CodexTextDelta,
-    CodexToolCallDelta,
-    codex_user_content_with_images,
 )
-from .codex_protocol import CodexNativeState, native_state_from_response_items
-from .codex_runtime import runtime_token_coordinator
-from .config_flow import (
+from .codex_runtime import refresh_runtime_tokens, runtime_token_coordinator
+from .error_formatting import request_failure_text
+from .settings import (
+    CONF_LLM_HASS_API,
     CONF_WEB_SEARCH,
+    DEFAULT_MODEL,
+    DEFAULT_PROMPT,
     DEFAULT_REASONING_EFFORT,
     DEFAULT_REASONING_SUMMARY,
     DEFAULT_TEXT_VERBOSITY,
     DEFAULT_WEB_SEARCH,
-    normalize_llm_api_selection,
+    RuntimeSettings,
+    default_llm_api_selection,
+    prompt_cache_key,
 )
-from .error_formatting import request_failure_text
-from .runtime_options import normalize_runtime_options
-from .schema_compat import to_openapi
+from .transcript import (
+    codex_input_from_chat_log,
+    codex_tools_from_chat_log,
+    instructions_from_chat_log,
+)
 
-try:
-    from homeassistant.const import CONF_LLM_HASS_API
-except ImportError:
-    CONF_LLM_HASS_API = "llm_hass_api"
-
-MAX_TOOL_ITERATIONS = 5
-MAX_CODEX_INPUT_ITEMS = 24
-MAX_CODEX_HISTORY_BYTES = 128 * 1024
-IMAGE_HISTORY_USER_TURNS = 2
-MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024
-MAX_IMAGE_ATTACHMENTS = 4
-MAX_TOTAL_IMAGE_ATTACHMENT_BYTES = 20 * 1024 * 1024
 LOGGER = logging.getLogger(__name__)
 _WEB_SEARCH_CITATION_INSTRUCTIONS = (
     "When using web search, do not include raw URLs, markdown links, or a Source/Sources "
     "section in the response text. Refer to sources by human-readable names only. The "
     "integration renders structured citations separately."
 )
-
-
-def _serialized_bytes(value: Any) -> int:
-    """Return deterministic UTF-8 JSON size without retaining request content."""
-    return len(
-        json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
-    )
-
-
-def _image_payload_metrics(input_items: list[dict[str, Any]]) -> tuple[int, int]:
-    image_count = 0
-    image_payload_bytes = 0
-    for item in input_items:
-        content = item.get("content")
-        if not isinstance(content, list):
-            continue
-        for part in content:
-            if isinstance(part, dict) and part.get("type") == "input_image":
-                image_count += 1
-                image_payload_bytes += _serialized_bytes(part)
-    return image_count, image_payload_bytes
-
-
-def _native_response_items(input_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Identify replayable provider items in the final Responses input only."""
-    native_types = {"reasoning", "message", "web_search_call"}
-    return [
-        item
-        for item in input_items
-        if item.get("type") in native_types
-        or (item.get("type") == "function_call" and isinstance(item.get("id"), str))
-    ]
-
-
-def _payload_component_metrics(
-    *,
-    instructions: str,
-    input_items: list[dict[str, Any]],
-    tools: list[dict[str, Any]],
-    round_number: int | None,
-    allow_tools: bool,
-    is_ai_task: bool,
-) -> dict[str, int | bool | float]:
-    """Return content-free structural request accounting for debug telemetry."""
-    function_tools = [tool for tool in tools if tool.get("type") == "function"]
-    tool_results = [item for item in input_items if item.get("type") == "function_call_output"]
-    native_items = _native_response_items(input_items)
-    retained_turn_count = sum(item.get("role") == "user" for item in input_items)
-    image_count, image_payload_bytes = _image_payload_metrics(input_items)
-    function_tool_bytes = _serialized_bytes(function_tools)
-    tools_bytes = _serialized_bytes(tools)
-    input_items_bytes = _serialized_bytes(input_items)
-    native_state_bytes = _serialized_bytes(native_items)
-    tool_result_bytes = sum(_serialized_bytes(item) for item in tool_results)
-    instructions_bytes = len(instructions.encode())
-    total_top_level_bytes = instructions_bytes + tools_bytes + input_items_bytes
-    metrics: dict[str, int | bool | float] = {
-        "instructions_bytes": instructions_bytes,
-        "tools_bytes": tools_bytes,
-        "function_tool_bytes": function_tool_bytes,
-        "tool_count": len(function_tools),
-        "input_items_bytes": input_items_bytes,
-        "input_items_count": len(input_items),
-        "retained_turn_count": retained_turn_count,
-        "native_state_bytes": native_state_bytes,
-        "native_state_item_count": len(native_items),
-        "tool_result_bytes": tool_result_bytes,
-        "tool_result_count": len(tool_results),
-        "image_payload_bytes": image_payload_bytes,
-        "image_count": image_count,
-        "tool_round": round_number or 0,
-        "tools_enabled": allow_tools,
-        "is_ai_task": is_ai_task,
-    }
-    if total_top_level_bytes:
-        metrics["instructions_top_level_share"] = round(
-            instructions_bytes / total_top_level_bytes, 6
-        )
-        metrics["tools_top_level_share"] = round(tools_bytes / total_top_level_bytes, 6)
-        metrics["input_items_top_level_share"] = round(
-            input_items_bytes / total_top_level_bytes, 6
-        )
-    if input_items_bytes:
-        metrics["native_state_input_items_share"] = round(
-            native_state_bytes / input_items_bytes, 6
-        )
-        metrics["tool_result_input_items_share"] = round(
-            tool_result_bytes / input_items_bytes, 6
-        )
-        metrics["image_payload_input_items_share"] = round(
-            image_payload_bytes / input_items_bytes, 6
-        )
-    return metrics
 
 
 async def async_setup_entry(
@@ -202,23 +90,19 @@ class CodexAssistConversationEntity(
         user_input: conversation.ConversationInput,
         chat_log: conversation.ChatLog,
     ) -> conversation.ConversationResult:
-        settings = {**self.entry.data, **self.entry.options}
-        runtime_options = normalize_runtime_options(settings)
-        model = settings.get("model", "gpt-5.4")
-        prompt = settings.get(
-            "prompt",
-            "You are a concise Home Assistant Assist conversation agent.",
-        )
+        settings = RuntimeSettings.from_entry(self.entry.data, self.entry.options)
+        runtime_options = settings.runtime_options
+        model = settings.get("model", DEFAULT_MODEL)
+        prompt = settings.get("prompt", DEFAULT_PROMPT)
         reasoning_effort = settings.get("reasoning_effort", DEFAULT_REASONING_EFFORT)
         reasoning_summary = settings.get("reasoning_summary", DEFAULT_REASONING_SUMMARY)
         text_verbosity = settings.get("text_verbosity", DEFAULT_TEXT_VERBOSITY)
         web_search = bool(settings.get(CONF_WEB_SEARCH, DEFAULT_WEB_SEARCH))
-        llm_hass_api = (
-            normalize_llm_api_selection(settings.get(CONF_LLM_HASS_API))
-            or [llm.LLM_API_ASSIST]
+        llm_hass_api = default_llm_api_selection(
+            settings.get(CONF_LLM_HASS_API), assist_api_id=llm.LLM_API_ASSIST
         )
         citations: list[CodexCitation] = []
-        prompt_cache_key = _conversation_prompt_cache_key(
+        cache_key = prompt_cache_key(
             self.entry.entry_id,
             getattr(user_input, "conversation_id", None)
             or getattr(chat_log, "conversation_id", None),
@@ -269,7 +153,7 @@ class CodexAssistConversationEntity(
             for _iteration in range(runtime_options.tool_iterations + 1):
                 allow_tools = _iteration < runtime_options.tool_iterations
                 try:
-                    tool_call_requested = await _stream_codex_turn_into_chat_log(
+                    tool_call_requested = await turn_runtime.stream_codex_turn_into_chat_log(
                         chat_log=chat_log,
                         codex=codex,
                         entity_id=self.entity_id or "",
@@ -277,9 +161,9 @@ class CodexAssistConversationEntity(
                         instructions=_instructions_for_turn(
                             chat_log, prompt, web_search=web_search
                         ),
-                        input_items=await _codex_input_from_chat_log(self.hass, chat_log),
+                        input_items=await codex_input_from_chat_log(self.hass, chat_log),
                         tools=(
-                            _codex_tools_from_chat_log(chat_log, enable_web_search=web_search)
+                            codex_tools_from_chat_log(chat_log, enable_web_search=web_search)
                             if allow_tools
                             else []
                         ),
@@ -288,7 +172,7 @@ class CodexAssistConversationEntity(
                         text_verbosity=text_verbosity,
                         allow_tools=allow_tools,
                         citation_sink=citations,
-                        prompt_cache_key=prompt_cache_key,
+                        prompt_cache_key=cache_key,
                         round_number=_iteration + 1,
                     )
                 except CodexAuthenticationError as err:
@@ -297,7 +181,7 @@ class CodexAssistConversationEntity(
                         err,
                     )
                     try:
-                        tokens = await _refresh_runtime_tokens(
+                        tokens = await refresh_runtime_tokens(
                             self.hass,
                             self.entry,
                             auth_client,
@@ -321,7 +205,7 @@ class CodexAssistConversationEntity(
                         image_generation_timeout=runtime_options.image_generation_timeout,
                     )
                     try:
-                        tool_call_requested = await _stream_codex_turn_into_chat_log(
+                        tool_call_requested = await turn_runtime.stream_codex_turn_into_chat_log(
                             chat_log=chat_log,
                             codex=codex,
                             entity_id=self.entity_id or "",
@@ -329,9 +213,9 @@ class CodexAssistConversationEntity(
                             instructions=_instructions_for_turn(
                                 chat_log, prompt, web_search=web_search
                             ),
-                            input_items=await _codex_input_from_chat_log(self.hass, chat_log),
+                            input_items=await codex_input_from_chat_log(self.hass, chat_log),
                             tools=(
-                                _codex_tools_from_chat_log(chat_log, enable_web_search=web_search)
+                                codex_tools_from_chat_log(chat_log, enable_web_search=web_search)
                                 if allow_tools
                                 else []
                             ),
@@ -340,7 +224,7 @@ class CodexAssistConversationEntity(
                             text_verbosity=text_verbosity,
                             allow_tools=allow_tools,
                             citation_sink=citations,
-                            prompt_cache_key=prompt_cache_key,
+                            prompt_cache_key=cache_key,
                             round_number=_iteration + 1,
                         )
                     except CodexAuthenticationError as retry_err:
@@ -398,194 +282,6 @@ def _request_failure_text(err: BaseException) -> str:
     return request_failure_text("Codex Assist failed", err)
 
 
-def _conversation_prompt_cache_key(entry_id: str, conversation_id: object) -> str | None:
-    """Return an opaque stable cache partition for one HA conversation."""
-    if not isinstance(conversation_id, str) or not conversation_id:
-        return None
-    digest = hashlib.sha256(f"{entry_id}\0{conversation_id}".encode()).hexdigest()
-    return digest
-
-
-async def _run_tool_rounds(
-    *,
-    max_tool_rounds: int,
-    run_iteration: Callable[[int, bool], Awaitable[bool]],
-) -> None:
-    """Run bounded tool rounds, then exactly one tools-disabled final turn."""
-    for round_number in range(1, max_tool_rounds + 1):
-        if not await run_iteration(round_number, True):
-            return
-    LOGGER.info(
-        "Codex Assist exhausted %d tool-capable rounds; forcing final synthesis",
-        max_tool_rounds,
-    )
-    await run_iteration(max_tool_rounds + 1, False)
-
-
-async def _stream_codex_turn_into_chat_log(
-    *,
-    chat_log: conversation.ChatLog,
-    codex: CodexClient,
-    entity_id: str,
-    model: str,
-    instructions: str,
-    input_items: list[dict[str, Any]],
-    tools: list[dict[str, Any]],
-    reasoning_effort: str,
-    reasoning_summary: str,
-    text_verbosity: str,
-    text_format: dict[str, Any] | None = None,
-    allow_tools: bool = True,
-    citation_sink: list[CodexCitation] | None = None,
-    on_text_delta: Callable[[str], None] | None = None,
-    prompt_cache_key: str | None = None,
-    round_number: int | None = None,
-    is_ai_task: bool = False,
-) -> bool:
-    tool_call_requested = False
-
-    def mark_tool_call_requested() -> None:
-        nonlocal tool_call_requested
-        tool_call_requested = True
-
-    emitted_text = False
-
-    def mark_text_emitted(text: str) -> None:
-        nonlocal emitted_text
-        if text:
-            emitted_text = True
-            if on_text_delta is not None:
-                on_text_delta(text)
-
-    LOGGER.debug(
-        "Codex Assist Responses payload metrics: %s",
-        _payload_component_metrics(
-            instructions=instructions,
-            input_items=input_items,
-            tools=tools,
-            round_number=round_number,
-            allow_tools=allow_tools,
-            is_ai_task=is_ai_task,
-        ),
-    )
-
-    for attempt in range(2):
-        try:
-            stream_kwargs: dict[str, Any] = {
-                "model": model,
-                "instructions": instructions,
-                "input_items": input_items,
-                "tools": tools,
-                "reasoning_effort": reasoning_effort,
-                "reasoning_summary": reasoning_summary,
-                "text_verbosity": text_verbosity,
-                "text_format": text_format,
-            }
-            if prompt_cache_key is not None:
-                stream_kwargs["prompt_cache_key"] = prompt_cache_key
-            async for _delta in chat_log.async_add_delta_content_stream(
-                entity_id,
-                _codex_stream_to_assistant_deltas(
-                    codex.stream_turn(**stream_kwargs),
-                    on_tool_call=mark_tool_call_requested,
-                    on_text_delta=mark_text_emitted,
-                    allow_tools=allow_tools,
-                    citation_sink=citation_sink,
-                ),
-            ):
-                pass
-            break
-        except (httpx.RemoteProtocolError, httpx.ReadError):
-            if allow_tools or emitted_text or attempt:
-                raise
-            await asyncio.sleep(0.5)
-    return tool_call_requested
-
-
-async def _codex_stream_to_assistant_deltas(
-    stream: AsyncIterator[CodexStreamDelta],
-    *,
-    on_tool_call: Callable[[], None] | None = None,
-    on_text_delta: Callable[[str], None] | None = None,
-    allow_tools: bool = True,
-    citation_sink: list[CodexCitation] | None = None,
-) -> AsyncIterator[AssistantContentDeltaDict]:
-    started = False
-    seen_urls: set[str] = set()
-    response_items: list[dict[str, Any]] = []
-    async for delta in stream:
-        if isinstance(delta, CodexResponseItemDelta):
-            response_items.append(delta.item)
-            continue
-        if isinstance(delta, CodexCitationDelta):
-            citation = _safe_citation(delta.citation)
-            if citation is not None and citation.url not in seen_urls:
-                seen_urls.add(citation.url)
-                if citation_sink is not None and all(
-                    existing.url != citation.url for existing in citation_sink
-                ):
-                    citation_sink.append(citation)
-            continue
-        if not started:
-            yield {"role": "assistant"}
-            started = True
-        if isinstance(delta, CodexTextDelta):
-            if on_text_delta is not None:
-                on_text_delta(delta.text)
-            yield {"content": delta.text}
-        elif isinstance(delta, CodexToolCallDelta):
-            if not allow_tools:
-                raise RuntimeError(
-                    "Codex Assist final synthesis returned a tool call while tools are disabled"
-                )
-            if on_tool_call is not None:
-                on_tool_call()
-            yield {
-                "tool_calls": [
-                    llm.ToolInput(
-                        id=delta.tool_call.id,
-                        tool_name=delta.tool_call.name,
-                        tool_args=delta.tool_call.arguments,
-                    )
-                ]
-            }
-    if native_state := native_state_from_response_items(response_items):
-        if not started:
-            yield {"role": "assistant"}
-        yield {"native": native_state}
-
-
-def _safe_citation(citation: CodexCitation) -> CodexCitation | None:
-    if len(citation.url) > 2048:
-        return None
-    if any(character.isspace() or ord(character) < 32 for character in citation.url):
-        return None
-    try:
-        parsed = urlsplit(citation.url)
-    except ValueError:
-        return None
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return None
-    if "<" in citation.url or ">" in citation.url:
-        return None
-    title = " ".join(citation.title.split())[:200]
-    if not title:
-        return None
-    title = (
-        title.replace("\\", "\\\\")
-        .replace("[", "\\[")
-        .replace("]", "\\]")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
-    return CodexCitation(
-        title=title,
-        url=citation.url,
-        start_index=citation.start_index,
-        end_index=citation.end_index,
-    )
-
-
 def _citation_lines(citations: list[CodexCitation]) -> str:
     return "\n".join(f"- {citation.title} — <{citation.url}>" for citation in citations)
 
@@ -597,23 +293,6 @@ def _attach_citations_card(
     if not citations:
         return
     result.response.async_set_card("Sources", _citation_lines(citations))
-
-
-async def _refresh_runtime_tokens(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    auth_client: CodexAuthClient,
-    tokens: CodexTokenSet,
-) -> CodexTokenSet:
-    return await runtime_token_coordinator(entry).refresh_after_rejection(
-        lambda: entry.data,
-        rejected_tokens=tokens,
-        auth_client=auth_client,
-        async_update_entry_data=lambda data: hass.config_entries.async_update_entry(
-            entry,
-            data=data,
-        ),
-    )
 
 
 def _start_reauth_result(
@@ -633,237 +312,13 @@ def _start_reauth_result(
     )
 
 
-def _instructions_from_chat_log(
-    chat_log: conversation.ChatLog,
-    fallback_prompt: str,
-) -> str:
-    for content in chat_log.content:
-        if getattr(content, "role", None) == "system" and isinstance(
-            getattr(content, "content", None),
-            str,
-        ):
-            return content.content
-    return fallback_prompt
-
-
 def _instructions_for_turn(
     chat_log: conversation.ChatLog,
     fallback_prompt: str,
     *,
     web_search: bool,
 ) -> str:
-    instructions = _instructions_from_chat_log(chat_log, fallback_prompt)
+    instructions = instructions_from_chat_log(chat_log, fallback_prompt)
     if not web_search:
         return instructions
     return f"{instructions.rstrip()}\n\n{_WEB_SEARCH_CITATION_INSTRUCTIONS}"
-
-
-async def _codex_input_from_chat_log(
-    hass: HomeAssistant,
-    chat_log: conversation.ChatLog,
-) -> list[dict[str, Any]]:
-    input_items: list[dict[str, Any]] = []
-    user_content_indices = [
-        index
-        for index, content in enumerate(chat_log.content)
-        if getattr(content, "role", None) == "user"
-    ]
-    image_history_indices = set(user_content_indices[-IMAGE_HISTORY_USER_TURNS:])
-
-    for index, content in enumerate(chat_log.content):
-        role = getattr(content, "role", None)
-        text = getattr(content, "content", None)
-        if role == "system":
-            continue
-        if role == "tool_result":
-            input_items.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": content.tool_call_id,
-                    "output": json.dumps(
-                        content.tool_result,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                }
-            )
-            continue
-        native = getattr(content, "native", None)
-        if role == "assistant" and isinstance(native, CodexNativeState):
-            input_items.extend(native.items)
-            continue
-        if role in {"user", "assistant"} and isinstance(text, str) and text.strip():
-            item_content: str | list[dict[str, Any]] = text
-            if role == "user" and index in image_history_indices:
-                images = await _async_image_attachments_for_codex(
-                    hass,
-                    getattr(content, "attachments", None),
-                )
-                item_content = codex_user_content_with_images(text, images)
-            input_items.append({"role": role, "content": item_content})
-
-        tool_calls = getattr(content, "tool_calls", None)
-        if role == "assistant" and tool_calls:
-            for tool_call in tool_calls:
-                input_items.append(
-                    {
-                        "type": "function_call",
-                        "name": tool_call.tool_name,
-                        "arguments": json.dumps(tool_call.tool_args),
-                        "call_id": tool_call.id,
-                    }
-                )
-
-    return _trim_codex_input_items(
-        input_items,
-        max_items=MAX_CODEX_INPUT_ITEMS,
-        max_bytes=MAX_CODEX_HISTORY_BYTES,
-    )
-
-
-def _codex_input_size_bytes(input_items: list[dict[str, Any]]) -> int:
-    return len(
-        json.dumps(
-            input_items,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode()
-    )
-
-
-def _trim_codex_input_items(
-    input_items: list[dict[str, Any]],
-    *,
-    max_items: int,
-    max_bytes: int | None = None,
-) -> list[dict[str, Any]]:
-    if len(input_items) <= max_items and (
-        max_bytes is None or _codex_input_size_bytes(input_items) <= max_bytes
-    ):
-        return input_items
-
-    groups: list[list[dict[str, Any]]] = []
-    current: list[dict[str, Any]] = []
-    for item in input_items:
-        if item.get("role") == "user" and current:
-            groups.append(current)
-            current = []
-        current.append(item)
-    if current:
-        groups.append(current)
-
-    selected: list[list[dict[str, Any]]] = []
-    selected_items = 0
-    selected_bytes = 2
-    for group in reversed(groups):
-        if not selected and len(group) > max_items:
-            raise ValueError(
-                f"Current Codex turn contains {len(group)} items; maximum is {max_items}"
-            )
-        group_bytes = _codex_input_size_bytes(group) - 2
-        separator_bytes = 1 if selected_items else 0
-        if selected and (
-            selected_items + len(group) > max_items
-            or (
-                max_bytes is not None
-                and selected_bytes + separator_bytes + group_bytes > max_bytes
-            )
-        ):
-            break
-        selected.append(group)
-        selected_items += len(group)
-        selected_bytes += separator_bytes + group_bytes
-    return [item for group in reversed(selected) for item in group]
-
-
-async def _async_image_attachments_for_codex(
-    hass: HomeAssistant,
-    attachments: Any,
-) -> list[tuple[str, bytes]]:
-    if not attachments:
-        return []
-    return await hass.async_add_executor_job(_image_attachments_for_codex, attachments)
-
-
-def _image_attachments_for_codex(attachments: Any) -> list[tuple[str, bytes]]:
-    candidates: list[tuple[str, Any, int]] = []
-    for attachment in attachments:
-        mime_type = getattr(attachment, "mime_type", "")
-        if not isinstance(mime_type, str) or not mime_type.startswith("image/"):
-            continue
-        path = getattr(attachment, "path", None)
-        if path is None:
-            continue
-        try:
-            size = path.stat().st_size
-        except OSError as err:
-            LOGGER.warning("Skipping unreadable Codex Assist image attachment %s: %s", path, err)
-            continue
-        if size > MAX_IMAGE_ATTACHMENT_BYTES:
-            LOGGER.warning(
-                "Skipping Codex Assist image attachment over %s bytes: %s",
-                MAX_IMAGE_ATTACHMENT_BYTES,
-                path,
-            )
-            continue
-        candidates.append((mime_type, path, size))
-
-    if len(candidates) > MAX_IMAGE_ATTACHMENTS:
-        raise ValueError(f"Codex Assist accepts at most {MAX_IMAGE_ATTACHMENTS} image attachments")
-    if sum(size for _, _, size in candidates) > MAX_TOTAL_IMAGE_ATTACHMENT_BYTES:
-        raise ValueError("Codex Assist image attachments exceed the total attachment size limit")
-
-    images: list[tuple[str, bytes]] = []
-    total_bytes = 0
-    for mime_type, path, _size in candidates:
-        remaining_bytes = MAX_TOTAL_IMAGE_ATTACHMENT_BYTES - total_bytes
-        read_limit = min(MAX_IMAGE_ATTACHMENT_BYTES, remaining_bytes)
-        try:
-            with path.open("rb") as attachment_file:
-                data = attachment_file.read(read_limit + 1)
-        except OSError as err:
-            LOGGER.warning("Skipping unreadable Codex Assist image attachment %s: %s", path, err)
-            continue
-        if len(data) > MAX_IMAGE_ATTACHMENT_BYTES:
-            raise ValueError("Codex Assist image attachment grew beyond the per-file size limit")
-        if len(data) > remaining_bytes:
-            raise ValueError(
-                "Codex Assist image attachments exceed the total attachment size limit"
-            )
-        total_bytes += len(data)
-        images.append((mime_type, data))
-    return images
-
-
-def _codex_tools_from_chat_log(
-    chat_log: conversation.ChatLog,
-    *,
-    enable_web_search: bool = False,
-) -> list[dict[str, Any]]:
-    tools: list[dict[str, Any]] = []
-    if chat_log.llm_api:
-        tools.extend(
-            _codex_tool_from_ha_tool(tool, chat_log.llm_api.custom_serializer)
-            for tool in chat_log.llm_api.tools
-        )
-    if enable_web_search:
-        tools.append({"type": "web_search"})
-    return tools
-
-
-def _codex_tool_from_ha_tool(
-    tool: llm.Tool,
-    custom_serializer: Any,
-) -> dict[str, Any]:
-    schema = to_openapi(tool.parameters, custom_serializer=custom_serializer)
-    unsupported_keys = {"oneOf", "anyOf", "allOf", "enum", "not"}
-    if unsupported_keys.intersection(schema):
-        schema = {k: v for k, v in schema.items() if k not in unsupported_keys}
-
-    return {
-        "type": "function",
-        "name": tool.name,
-        "description": tool.description,
-        "parameters": schema,
-        "strict": False,
-    }

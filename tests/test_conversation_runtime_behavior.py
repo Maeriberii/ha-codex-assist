@@ -74,7 +74,7 @@ async def test_refresh_runtime_tokens_persists_rotated_tokens(conversation_modul
     hass = type("Hass", (), {"config_entries": FakeConfigEntries()})()
     entry = FakeEntry()
 
-    tokens = await conversation_module._refresh_runtime_tokens(
+    tokens = await conversation_module.refresh_runtime_tokens(
         hass,
         entry,
         FakeAuthClient(),
@@ -184,8 +184,8 @@ async def test_handle_message_reports_friendly_usage_limit_without_status_code(
         lambda entry: ResolvedCoordinator(),
     )
     monkeypatch.setattr(
-        conversation_module,
-        "_stream_codex_turn_into_chat_log",
+        conversation_module.turn_runtime,
+        "stream_codex_turn_into_chat_log",
         raise_rate_limit,
     )
 

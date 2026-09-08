@@ -24,32 +24,28 @@ from .codex_image import (
 from .codex_models import ModelCatalog, ModelDiscoveryCache, fetch_codex_model_ids
 from .model_discovery import async_entry_model_catalog
 from .runtime_options import RUNTIME_OPTION_SPECS, RuntimeOptionSpec, invalid_runtime_options
-
-try:
-    from homeassistant.const import CONF_LLM_HASS_API
-except ImportError:
-    # The options key predates the public Home Assistant constant.
-    CONF_LLM_HASS_API = "llm_hass_api"
+from .settings import (
+    CONF_IMAGE_MODEL,
+    CONF_IMAGE_SIZE,
+    CONF_LLM_HASS_API,
+    CONF_MODEL,
+    CONF_PROMPT,
+    CONF_REASONING_EFFORT,
+    CONF_REASONING_SUMMARY,
+    CONF_TEXT_VERBOSITY,
+    CONF_WEB_SEARCH,
+    DEFAULT_PROMPT,
+    DEFAULT_REASONING_EFFORT,
+    DEFAULT_TEXT_VERBOSITY,
+    DEFAULT_WEB_SEARCH,
+)
 
 CONF_ACCESS_TOKEN = "access_token"
-CONF_PROMPT = "prompt"
 CONF_REFRESH_TOKEN = "refresh_token"
-CONF_MODEL = "model"
-CONF_IMAGE_MODEL = "image_model"
-CONF_IMAGE_SIZE = "image_size"
-CONF_REASONING_EFFORT = "reasoning_effort"
-CONF_REASONING_SUMMARY = "reasoning_summary"
-CONF_TEXT_VERBOSITY = "text_verbosity"
-CONF_WEB_SEARCH = "web_search"
 SECTION_CHAT_SETTINGS = "chat_settings"
 SECTION_ADVANCED_SETTINGS = "advanced_settings"
 SECTION_IMAGE_SETTINGS = "image_settings"
 SECTION_RUNTIME_ORCHESTRATION = "runtime_orchestration"
-DEFAULT_PROMPT = "You are a concise Home Assistant Assist conversation agent."
-DEFAULT_REASONING_EFFORT = "low"
-DEFAULT_REASONING_SUMMARY = "off"
-DEFAULT_TEXT_VERBOSITY = "medium"
-DEFAULT_WEB_SEARCH = False
 
 
 class CodexAssistConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -311,23 +307,24 @@ def _settings_schema(
         image_size_default = DEFAULT_IMAGE_SIZE
 
     advanced_settings: dict[Any, Any] = {
-        vol.Optional(CONF_PROMPT, default=defaults.get(CONF_PROMPT, DEFAULT_PROMPT)):
-            selector.TextSelector(selector.TextSelectorConfig(multiline=True)),
+        vol.Optional(
+            CONF_PROMPT, default=defaults.get(CONF_PROMPT, DEFAULT_PROMPT)
+        ): selector.TextSelector(selector.TextSelectorConfig(multiline=True)),
         vol.Optional(
             CONF_REASONING_EFFORT,
             default=defaults.get(CONF_REASONING_EFFORT, DEFAULT_REASONING_EFFORT),
         ): _low_medium_high_selector(),
     }
     if llm_apis is not None:
-        advanced_settings[vol.Optional(
-            CONF_LLM_HASS_API, default=_llm_api_default(defaults)
-        )] = selector.SelectSelector(
-            selector.SelectSelectorConfig(
-                options=[
-                    selector.SelectOptionDict(value=api.id, label=api.name) for api in llm_apis
-                ],
-                mode=selector.SelectSelectorMode.DROPDOWN,
-                multiple=True,
+        advanced_settings[vol.Optional(CONF_LLM_HASS_API, default=_llm_api_default(defaults))] = (
+            selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[
+                        selector.SelectOptionDict(value=api.id, label=api.name) for api in llm_apis
+                    ],
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                    multiple=True,
+                )
             )
         )
 
@@ -377,11 +374,14 @@ def _settings_schema(
                 {"collapsed": True},
             ),
             vol.Optional(SECTION_RUNTIME_ORCHESTRATION): section(
-                vol.Schema({
-                    vol.Optional(spec.key, default=defaults.get(spec.key, spec.default)):
-                        _number_selector(spec)
-                    for spec in RUNTIME_OPTION_SPECS
-                }),
+                vol.Schema(
+                    {
+                        vol.Optional(
+                            spec.key, default=defaults.get(spec.key, spec.default)
+                        ): _number_selector(spec)
+                        for spec in RUNTIME_OPTION_SPECS
+                    }
+                ),
                 {"collapsed": True},
             ),
         }
@@ -390,7 +390,9 @@ def _settings_schema(
 
 def _number_selector(spec: RuntimeOptionSpec) -> selector.NumberSelector:
     config: dict[str, Any] = {
-        "min": spec.minimum, "max": spec.maximum, "step": 1,
+        "min": spec.minimum,
+        "max": spec.maximum,
+        "step": 1,
         "mode": selector.NumberSelectorMode.BOX,
     }
     if spec.unit is not None:
@@ -414,11 +416,7 @@ def _llm_api_default(defaults: dict[str, Any]) -> list[str]:
 def _model_schema(defaults: dict[str, Any], *, model_options: list[str]) -> vol.Schema:
     model_options = list(dict.fromkeys(model_options))
     saved_model = defaults.get(CONF_MODEL)
-    model_default = (
-        saved_model
-        if saved_model in model_options
-        else next(iter(model_options), None)
-    )
+    model_default = saved_model if saved_model in model_options else next(iter(model_options), None)
     if not model_options:
         return vol.Schema({})
     return vol.Schema(

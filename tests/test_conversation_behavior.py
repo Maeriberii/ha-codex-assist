@@ -20,6 +20,9 @@ from custom_components.codex_assist.codex_client import (
 from custom_components.codex_assist.codex_protocol import CodexNativeState
 from tests.ha_fakes import install_homeassistant_fakes
 
+transcript: object = None
+turn_runtime: object = None
+
 
 @dataclass
 class FakeContent:
@@ -76,6 +79,19 @@ class FakeHass:
         return func(*args)
 
 
+@pytest.fixture(autouse=True)
+def runtime_modules(monkeypatch):
+    install_homeassistant_fakes(monkeypatch)
+    globals().update(
+        {
+            name: importlib.reload(
+                importlib.import_module(f"custom_components.codex_assist.{name}")
+            )
+            for name in ("settings", "serialization", "telemetry", "transcript", "turn_runtime")
+        }
+    )
+
+
 @pytest.fixture
 def conversation_module(monkeypatch):
     install_homeassistant_fakes(monkeypatch)
@@ -120,7 +136,7 @@ async def test_codex_input_from_chat_log_preserves_history_tools_and_results(
         ]
     )
 
-    result = await conversation_module._codex_input_from_chat_log(object(), chat_log)
+    result = await transcript.codex_input_from_chat_log(object(), chat_log)
 
     assert result == [
         {"role": "user", "content": "turn on kitchen"},
@@ -133,7 +149,7 @@ async def test_codex_input_from_chat_log_preserves_history_tools_and_results(
         {
             "type": "function_call_output",
             "call_id": "call-1",
-                "output": json.dumps({"success": True}, separators=(",", ":")),
+            "output": json.dumps({"success": True}, separators=(",", ":")),
         },
         {"role": "assistant", "content": "Done."},
     ]
@@ -161,7 +177,7 @@ async def test_codex_stream_to_assistant_deltas_yields_text_and_tool_inputs(
 
     deltas = [
         delta
-        async for delta in conversation_module._codex_stream_to_assistant_deltas(
+        async for delta in turn_runtime.codex_stream_to_assistant_deltas(
             stream(),
             on_tool_call=mark_called,
         )
@@ -186,7 +202,7 @@ def test_codex_tools_from_chat_log_converts_ha_llm_api_tools(conversation_module
     )()
     llm_api = type("LLMApi", (), {"tools": [tool], "custom_serializer": None})()
 
-    result = conversation_module._codex_tools_from_chat_log(FakeChatLog(llm_api=llm_api))
+    result = transcript.codex_tools_from_chat_log(FakeChatLog(llm_api=llm_api))
 
     assert result == [
         {
@@ -197,18 +213,16 @@ def test_codex_tools_from_chat_log_converts_ha_llm_api_tools(conversation_module
             "strict": False,
         }
     ]
-    assert conversation_module._codex_tools_from_chat_log(
+    assert transcript.codex_tools_from_chat_log(
         FakeChatLog(llm_api=llm_api), enable_web_search=True
     ) == [*result, {"type": "web_search"}]
 
 
 def test_codex_tools_adds_opt_in_web_search_without_ha_tools(conversation_module):
-    assert (
-        conversation_module._codex_tools_from_chat_log(FakeChatLog(), enable_web_search=False) == []
-    )
-    assert conversation_module._codex_tools_from_chat_log(
-        FakeChatLog(), enable_web_search=True
-    ) == [{"type": "web_search"}]
+    assert transcript.codex_tools_from_chat_log(FakeChatLog(), enable_web_search=False) == []
+    assert transcript.codex_tools_from_chat_log(FakeChatLog(), enable_web_search=True) == [
+        {"type": "web_search"}
+    ]
 
 
 @pytest.mark.asyncio
@@ -235,7 +249,7 @@ async def test_codex_stream_captures_citations_without_streaming_urls(conversati
     captured = []
     deltas = [
         delta
-        async for delta in conversation_module._codex_stream_to_assistant_deltas(
+        async for delta in turn_runtime.codex_stream_to_assistant_deltas(
             stream(),
             citation_sink=captured,
         )
@@ -276,9 +290,7 @@ def test_citation_result_keeps_sources_in_card_without_changing_speech(conversat
 
     conversation_module._attach_citations_card(result, citations)
 
-    assert result.response.speech["plain"]["speech"] == (
-        "IANA maintains the reserved domains."
-    )
+    assert result.response.speech["plain"]["speech"] == ("IANA maintains the reserved domains.")
     assert result.response.card["simple"] == {
         "title": "Sources",
         "content": "- IANA — <https://www.iana.org/help/example-domains>",
@@ -289,14 +301,10 @@ def test_web_search_instructions_suppress_spoken_source_urls(conversation_module
     chat_log = FakeChatLog([FakeContent(role="system", content="Be concise.")])
 
     assert (
-        conversation_module._instructions_for_turn(
-            chat_log, "fallback", web_search=False
-        )
+        conversation_module._instructions_for_turn(chat_log, "fallback", web_search=False)
         == "Be concise."
     )
-    instructions = conversation_module._instructions_for_turn(
-        chat_log, "fallback", web_search=True
-    )
+    instructions = conversation_module._instructions_for_turn(chat_log, "fallback", web_search=True)
 
     assert instructions.startswith("Be concise.\n\n")
     assert "do not include raw URLs" in instructions
@@ -310,7 +318,7 @@ async def test_stream_codex_turn_into_chat_log_calls_chat_log_stream_api(
     chat_log = FakeChatLog()
     codex = FakeCodex([CodexTextDelta("Done")])
 
-    tool_requested = await conversation_module._stream_codex_turn_into_chat_log(
+    tool_requested = await turn_runtime.stream_codex_turn_into_chat_log(
         chat_log=chat_log,
         codex=codex,
         entity_id="conversation.codex_assist",
@@ -358,13 +366,13 @@ async def test_codex_input_from_chat_log_translates_image_attachments(
 
     hass = FakeHass()
 
-    result = await conversation_module._codex_input_from_chat_log(hass, chat_log)
+    result = await transcript.codex_input_from_chat_log(hass, chat_log)
 
     content = result[0]["content"]
     assert content[0] == {"type": "input_text", "text": "describe this"}
     assert content[1]["type"] == "input_image"
     assert content[1]["image_url"].startswith("data:image/png;base64,")
-    assert hass.executor_jobs[0][0] is conversation_module._image_attachments_for_codex
+    assert hass.executor_jobs[0][0] is transcript.image_attachments_for_codex
 
 
 def test_image_attachments_rejects_too_many_images(
@@ -372,7 +380,7 @@ def test_image_attachments_rejects_too_many_images(
     monkeypatch,
     tmp_path: Path,
 ):
-    monkeypatch.setattr(conversation_module, "MAX_IMAGE_ATTACHMENTS", 2)
+    monkeypatch.setattr(transcript, "MAX_IMAGE_ATTACHMENTS", 2)
     attachments = []
     for index in range(3):
         path = tmp_path / f"image-{index}.png"
@@ -380,7 +388,7 @@ def test_image_attachments_rejects_too_many_images(
         attachments.append(type("Attachment", (), {"mime_type": "image/png", "path": path})())
 
     with pytest.raises(ValueError, match="at most 2 image attachments"):
-        conversation_module._image_attachments_for_codex(attachments)
+        transcript.image_attachments_for_codex(attachments)
 
 
 def test_image_attachments_rejects_aggregate_byte_limit(
@@ -388,7 +396,7 @@ def test_image_attachments_rejects_aggregate_byte_limit(
     monkeypatch,
     tmp_path: Path,
 ):
-    monkeypatch.setattr(conversation_module, "MAX_TOTAL_IMAGE_ATTACHMENT_BYTES", 5)
+    monkeypatch.setattr(transcript, "MAX_TOTAL_IMAGE_ATTACHMENT_BYTES", 5)
     attachments = []
     for index in range(2):
         path = tmp_path / f"image-{index}.png"
@@ -396,7 +404,7 @@ def test_image_attachments_rejects_aggregate_byte_limit(
         attachments.append(type("Attachment", (), {"mime_type": "image/png", "path": path})())
 
     with pytest.raises(ValueError, match="total attachment size"):
-        conversation_module._image_attachments_for_codex(attachments)
+        transcript.image_attachments_for_codex(attachments)
 
 
 def test_image_attachment_growth_is_read_with_a_hard_bound(
@@ -405,8 +413,8 @@ def test_image_attachment_growth_is_read_with_a_hard_bound(
 ):
     import io
 
-    monkeypatch.setattr(conversation_module, "MAX_IMAGE_ATTACHMENT_BYTES", 5)
-    monkeypatch.setattr(conversation_module, "MAX_TOTAL_IMAGE_ATTACHMENT_BYTES", 5)
+    monkeypatch.setattr(transcript, "MAX_IMAGE_ATTACHMENT_BYTES", 5)
+    monkeypatch.setattr(transcript, "MAX_TOTAL_IMAGE_ATTACHMENT_BYTES", 5)
 
     class BoundedReader(io.BytesIO):
         requested_size: int | None = None
@@ -432,7 +440,7 @@ def test_image_attachment_growth_is_read_with_a_hard_bound(
     )()
 
     with pytest.raises(ValueError, match="per-file size limit"):
-        conversation_module._image_attachments_for_codex([attachment])
+        transcript.image_attachments_for_codex([attachment])
 
     assert reader.requested_size == 6
 
@@ -464,7 +472,7 @@ def test_trim_codex_input_items_drops_orphaned_tool_outputs(conversation_module)
         },
     ]
 
-    result = conversation_module._trim_codex_input_items(input_items, max_items=4)
+    result = transcript.retain_complete_turns(input_items, max_items=4)
 
     assert result == [
         {"role": "user", "content": "latest"},
@@ -485,7 +493,7 @@ def test_trim_codex_input_items_drops_orphaned_tool_outputs(conversation_module)
 def test_trim_codex_input_items_leaves_short_history_unchanged(conversation_module):
     input_items = [{"role": "user", "content": "hello"}]
 
-    assert conversation_module._trim_codex_input_items(input_items, max_items=24) is input_items
+    assert transcript.retain_complete_turns(input_items, max_items=24) is input_items
 
 
 def test_trim_codex_input_items_keeps_complete_turn_at_retained_boundary(
@@ -508,7 +516,7 @@ def test_trim_codex_input_items_keeps_complete_turn_at_retained_boundary(
         {"role": "assistant", "content": "Done."},
     ]
 
-    assert conversation_module._trim_codex_input_items(input_items, max_items=4) == [
+    assert transcript.retain_complete_turns(input_items, max_items=4) == [
         {"role": "user", "content": "retained"},
         {
             "type": "function_call",
@@ -528,14 +536,11 @@ def test_trim_codex_input_items_keeps_complete_turn_at_retained_boundary(
 def test_trim_codex_input_items_rejects_oversize_current_turn(conversation_module):
     input_items = [
         {"role": "user", "content": "current"},
-        *[
-            {"type": "reasoning", "id": f"rs_{index}"}
-            for index in range(3)
-        ],
+        *[{"type": "reasoning", "id": f"rs_{index}"} for index in range(3)],
     ]
 
     with pytest.raises(ValueError, match="contains 4 items; maximum is 3"):
-        conversation_module._trim_codex_input_items(input_items, max_items=3)
+        transcript.retain_complete_turns(input_items, max_items=3)
 
 
 @pytest.mark.asyncio
@@ -575,7 +580,7 @@ async def test_codex_input_replays_owned_native_items_without_reconstruction(
         ]
     )
 
-    result = await conversation_module._codex_input_from_chat_log(object(), chat_log)
+    result = await transcript.codex_input_from_chat_log(object(), chat_log)
 
     assert result == [
         {"role": "user", "content": "turn on kitchen"},
@@ -583,7 +588,7 @@ async def test_codex_input_replays_owned_native_items_without_reconstruction(
         {
             "type": "function_call_output",
             "call_id": "call-1",
-                "output": json.dumps({"success": True}, separators=(",", ":")),
+            "output": json.dumps({"success": True}, separators=(",", ":")),
         },
     ]
 
@@ -596,9 +601,7 @@ async def test_codex_input_ignores_unowned_native_state(conversation_module):
         native={"items": [{"type": "reasoning", "encrypted_content": "injected"}]},
     )
 
-    result = await conversation_module._codex_input_from_chat_log(
-        object(), FakeChatLog([content])
-    )
+    result = await transcript.codex_input_from_chat_log(object(), FakeChatLog([content]))
 
     assert result == [{"role": "assistant", "content": "safe visible fallback"}]
 
@@ -626,10 +629,7 @@ async def test_codex_stream_attaches_native_state_outside_visible_deltas(
         yield CodexResponseItemDelta(reasoning)
         yield CodexResponseItemDelta(message)
 
-    deltas = [
-        delta
-        async for delta in conversation_module._codex_stream_to_assistant_deltas(stream())
-    ]
+    deltas = [delta async for delta in turn_runtime.codex_stream_to_assistant_deltas(stream())]
 
     assert deltas[:2] == [{"role": "assistant"}, {"content": "Done."}]
     assert deltas[2] == {"native": CodexNativeState((reasoning, message))}
@@ -650,13 +650,11 @@ async def test_codex_stream_does_not_attach_incomplete_reasoning_state(
             }
         )
 
-    assert [
-        delta
-        async for delta in conversation_module._codex_stream_to_assistant_deltas(stream())
-    ] == [
+    assert [delta async for delta in turn_runtime.codex_stream_to_assistant_deltas(stream())] == [
         {"role": "assistant"},
         {"content": "Visible fallback."},
     ]
+
 
 @pytest.mark.asyncio
 async def test_five_tool_rounds_force_one_tools_disabled_final_synthesis(conversation_module):
@@ -666,7 +664,7 @@ async def test_five_tool_rounds_force_one_tools_disabled_final_synthesis(convers
         calls.append((round_number, allow_tools))
         return allow_tools
 
-    await conversation_module._run_tool_rounds(
+    await turn_runtime.run_tool_rounds(
         max_tool_rounds=5,
         run_iteration=run_iteration,
     )
@@ -685,15 +683,11 @@ async def test_five_tool_rounds_force_one_tools_disabled_final_synthesis(convers
 async def test_tools_disabled_synthesis_fails_on_an_unexpected_tool_call(conversation_module):
     chat_log = FakeChatLog()
     codex = FakeCodex(
-        [
-            CodexToolCallDelta(
-                CodexToolCall(id="call-1", name="HassTurnOn", arguments={})
-            )
-        ]
+        [CodexToolCallDelta(CodexToolCall(id="call-1", name="HassTurnOn", arguments={}))]
     )
 
     with pytest.raises(RuntimeError, match="tools are disabled"):
-        await conversation_module._stream_codex_turn_into_chat_log(
+        await turn_runtime.stream_codex_turn_into_chat_log(
             chat_log=chat_log,
             codex=codex,
             entity_id="conversation.codex_assist",
@@ -730,14 +724,10 @@ async def test_native_transcript_survives_tool_round_and_final_synthesis(
     )
 
     async def run_iteration(_round_number, allow_tools):
-        input_items = await conversation_module._codex_input_from_chat_log(
-            object(), chat_log
-        )
+        input_items = await transcript.codex_input_from_chat_log(object(), chat_log)
         requests.append((allow_tools, input_items))
         native_items = tool_items if allow_tools else final_items
-        deltas: list[CodexStreamDelta] = [
-            CodexResponseItemDelta(item) for item in native_items
-        ]
+        deltas: list[CodexStreamDelta] = [CodexResponseItemDelta(item) for item in native_items]
         if allow_tools:
             deltas.append(
                 CodexToolCallDelta(
@@ -752,7 +742,7 @@ async def test_native_transcript_survives_tool_round_and_final_synthesis(
             deltas.insert(0, CodexTextDelta("All done."))
 
         stream_start = len(chat_log.streamed_deltas)
-        tool_requested = await conversation_module._stream_codex_turn_into_chat_log(
+        tool_requested = await turn_runtime.stream_codex_turn_into_chat_log(
             chat_log=chat_log,
             codex=FakeCodex(deltas),
             entity_id="conversation.codex_assist",
@@ -789,7 +779,7 @@ async def test_native_transcript_survives_tool_round_and_final_synthesis(
             )
         return tool_requested
 
-    await conversation_module._run_tool_rounds(
+    await turn_runtime.run_tool_rounds(
         max_tool_rounds=1,
         run_iteration=run_iteration,
     )
@@ -801,14 +791,12 @@ async def test_native_transcript_survives_tool_round_and_final_synthesis(
         {
             "type": "function_call_output",
             "call_id": "call-1",
-                "output": json.dumps({"success": True}, separators=(",", ":")),
+            "output": json.dumps({"success": True}, separators=(",", ":")),
         },
     ]
 
     chat_log.content.append(FakeContent(role="user", content="What happened?"))
-    next_turn_input = await conversation_module._codex_input_from_chat_log(
-        object(), chat_log
-    )
+    next_turn_input = await transcript.codex_input_from_chat_log(object(), chat_log)
 
     assert next_turn_input[-3:] == [
         *final_items,

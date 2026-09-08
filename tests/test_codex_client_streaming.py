@@ -96,11 +96,11 @@ async def test_generate_text_handles_crlf_sse_and_done_sentinel():
     response = FakeResponse(
         200,
         text=(
-            'event: response.output_text.delta\r\n'
+            "event: response.output_text.delta\r\n"
             'data: {"type":"response.output_text.delta","delta":"pong"}\r\n'
-            '\r\n'
-            'data: [DONE]\r\n'
-            '\r\n'
+            "\r\n"
+            "data: [DONE]\r\n"
+            "\r\n"
         ),
     )
     client = CodexClient(http_client=FakeHttpClient(response), access_token="token-1")
