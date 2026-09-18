@@ -52,6 +52,25 @@ _WEB_SEARCH_CITATION_INSTRUCTIONS = (
 )
 
 
+def _available_llm_api_selection(
+    hass: HomeAssistant, configured: object
+) -> list[str]:
+    """Return only currently registered APIs from the persisted allowlist."""
+    selected = default_llm_api_selection(configured, assist_api_id=llm.LLM_API_ASSIST)
+    get_apis = getattr(llm, "async_get_apis", None)
+    if get_apis is None:
+        return selected
+    available = {api.id for api in get_apis(hass)}
+    unavailable = [api_id for api_id in selected if api_id not in available]
+    if unavailable:
+        LOGGER.warning(
+            "Ignoring unavailable Home Assistant LLM APIs for Codex Assist: %s",
+            unavailable,
+        )
+    filtered = [api_id for api_id in selected if api_id in available]
+    return filtered or ([llm.LLM_API_ASSIST] if llm.LLM_API_ASSIST in available else [])
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -98,8 +117,8 @@ class CodexAssistConversationEntity(
         reasoning_summary = settings.get("reasoning_summary", DEFAULT_REASONING_SUMMARY)
         text_verbosity = settings.get("text_verbosity", DEFAULT_TEXT_VERBOSITY)
         web_search = bool(settings.get(CONF_WEB_SEARCH, DEFAULT_WEB_SEARCH))
-        llm_hass_api = default_llm_api_selection(
-            settings.get(CONF_LLM_HASS_API), assist_api_id=llm.LLM_API_ASSIST
+        llm_hass_api = _available_llm_api_selection(
+            self.hass, settings.get(CONF_LLM_HASS_API)
         )
         citations: list[CodexCitation] = []
         cache_key = prompt_cache_key(
