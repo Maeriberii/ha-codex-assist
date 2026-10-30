@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import voluptuous as vol
@@ -247,8 +248,10 @@ async def test_multi_turn_web_search_sources_are_not_spoken_after_ha_tool_call(
         tools = [fake_tool]
         custom_serializer = None
 
-        async def async_call_tool(self, tool_input: llm.ToolInput) -> dict[str, bool]:
+        async def async_call_tool(self, tool_input: llm.ToolInput) -> Any:
             assert tool_input.tool_name == "HassTestTool"
+            if tool_result_type := getattr(llm, "ToolResult", None):
+                return tool_result_type(data={"success": True})
             return {"success": True}
 
     async def fake_get_api(*args: object, **kwargs: object) -> FakeApiInstance:
