@@ -19,7 +19,7 @@ uv run --isolated --python 3.14 --with-requirements requirements_test_ha_min.txt
 ```
 
 CI runs the fast suite plus pinned real-Home-Assistant contract lanes against
-Home Assistant 2026.9.0, Home Assistant 2026.8.3 (before the schema converter
+Home Assistant 2026.10.4, Home Assistant 2026.8.3 (before the schema converter
 transition), and Home Assistant 2026.6.0, the minimum supported version. Update the stable pins in `requirements_test_ha.txt` together when
 advancing that contract. All lanes also run weekly to catch regressions without
 silently resolving a prerelease or a newly incompatible test harness mid-run.

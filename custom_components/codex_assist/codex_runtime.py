@@ -5,6 +5,7 @@ import base64
 import inspect
 import json
 import time
+import weakref
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
 
@@ -70,13 +71,33 @@ class RuntimeTokenCoordinator:
             return refreshed
 
 
+_COORDINATORS: weakref.WeakKeyDictionary[Any, RuntimeTokenCoordinator] = (
+    weakref.WeakKeyDictionary()
+)
+
+
 def runtime_token_coordinator(entry: Any) -> RuntimeTokenCoordinator:
-    """Return the coordinator shared by all platforms for a config entry."""
-    coordinator = getattr(entry, "runtime_data", None)
+    """Return the coordinator shared by platforms and overlapping entry reloads."""
+    try:
+        coordinator = _COORDINATORS.get(entry)
+    except TypeError:
+        # Lightweight callers may use unhashable or non-weak-referenceable entries.
+        coordinator = None
     if isinstance(coordinator, RuntimeTokenCoordinator):
         return coordinator
-    coordinator = RuntimeTokenCoordinator()
-    entry.runtime_data = coordinator
+
+    coordinator = getattr(entry, "runtime_data", None)
+    if not isinstance(coordinator, RuntimeTokenCoordinator):
+        coordinator = RuntimeTokenCoordinator()
+    try:
+        _COORDINATORS[entry] = coordinator
+    except TypeError:
+        pass
+    try:
+        entry.runtime_data = coordinator
+    except (AttributeError, TypeError):
+        # Some lightweight config-flow callers provide immutable entry sentinels.
+        pass
     return coordinator
 
 

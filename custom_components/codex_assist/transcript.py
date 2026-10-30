@@ -50,11 +50,19 @@ async def codex_input_from_chat_log(
         if role == "system":
             continue
         if role == "tool_result":
+            # Home Assistant 2026.10 wraps tool data in ToolResult; older
+            # supported versions expose it directly on the chat-log item.
+            result = getattr(content, "result", None)
+            tool_result = (
+                getattr(result, "data", result)
+                if result is not None
+                else content.tool_result
+            )
             input_items.append(
                 {
                     "type": "function_call_output",
                     "call_id": content.tool_call_id,
-                    "output": dumps_text(content.tool_result),
+                    "output": dumps_text(tool_result),
                 }
             )
             continue
