@@ -4,6 +4,7 @@ import importlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -30,6 +31,7 @@ class FakeContent:
     content: str | None = None
     tool_call_id: str | None = None
     tool_result: dict | None = None
+    result: object | None = None
     tool_calls: list | None = None
     attachments: list | None = None
     native: object | None = None
@@ -152,6 +154,30 @@ async def test_codex_input_from_chat_log_preserves_history_tools_and_results(
             "output": json.dumps({"success": True}, separators=(",", ":")),
         },
         {"role": "assistant", "content": "Done."},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_codex_input_from_chat_log_serializes_wrapped_tool_result(conversation_module):
+    tool_result = {"success": True, "state": "on"}
+    chat_log = FakeChatLog(
+        [
+            SimpleNamespace(
+                role="tool_result",
+                tool_call_id="call-1",
+                result=SimpleNamespace(data=tool_result),
+            )
+        ]
+    )
+
+    result = await transcript.codex_input_from_chat_log(object(), chat_log)
+
+    assert result == [
+        {
+            "type": "function_call_output",
+            "call_id": "call-1",
+            "output": json.dumps(tool_result, separators=(",", ":")),
+        }
     ]
 
 

@@ -218,8 +218,9 @@ class CodexClient:
 
             pending_tool_calls: dict[str, tuple[dict[str, Any], str]] = {}
             completed_tool_call_ids: set[str] = set()
+            held_tool_calls: list[CodexToolCallDelta] = []
             anonymous_call_index = 0
-            async for event in _aiter_sse_events(response):
+            async for event in _aiter_completed_response_events(response):
                 event_type = event.get("type")
                 if usage := _usage_from_event(event):
                     _log_usage("turn", usage)
@@ -244,29 +245,35 @@ class CodexClient:
                 if event_type == "response.function_call_arguments.done":
                     key = _function_call_event_key(event, pending_tool_calls)
                     if key is not None:
-                        pending_tool_call, pending_arguments = pending_tool_calls.pop(key)
+                        pending_tool_call, pending_arguments = pending_tool_calls[key]
                         arguments = event.get("arguments")
                         if isinstance(arguments, str):
                             pending_arguments = arguments
-                        tool_call = _tool_call_from_item(pending_tool_call, pending_arguments)
-                        completed_tool_call_ids.add(tool_call.id)
-                        yield CodexToolCallDelta(tool_call)
+                        pending_tool_calls[key] = (pending_tool_call, pending_arguments)
                     continue
                 if event_type == "response.output_item.done":
                     item = event.get("item")
                     if isinstance(item, dict):
                         yield CodexResponseItemDelta(copy.deepcopy(item))
-                    call_id = ""
                     if isinstance(item, dict) and item.get("type") == "function_call":
                         call_id = str(item.get("call_id") or item.get("id") or "")
                         key = _function_call_item_key(item, event)
+                        pending_call = None
                         if key is not None:
-                            pending_tool_calls.pop(key, None)
-                    if call_id and call_id in completed_tool_call_ids:
+                            pending_call = pending_tool_calls.pop(key, None)
+                        arguments = item.get("arguments")
+                        if not isinstance(arguments, str):
+                            arguments = pending_call[1] if pending_call else ""
+                        if call_id not in completed_tool_call_ids:
+                            tool_call = _tool_call_from_item(item, arguments)
+                            completed_tool_call_ids.add(tool_call.id)
+                            held_tool_calls.append(CodexToolCallDelta(tool_call))
                         continue
                 delta = _stream_delta_from_event(event)
                 if delta is not None:
                     yield delta
+            for tool_call in held_tool_calls:
+                yield tool_call
 
     async def generate_image(
         self,
@@ -307,7 +314,7 @@ class CodexClient:
                     f"Codex image request failed with status {response.status_code}: {error.detail}"
                 )
 
-            async for event in _aiter_sse_events(response):
+            async for event in _aiter_completed_response_events(response):
                 if usage := _usage_from_event(event):
                     _log_usage("image", usage)
                 found = _extract_image_b64(event)
@@ -813,22 +820,21 @@ def extract_tool_calls(payload: dict[str, Any]) -> list[CodexToolCall]:
 
 
 def _tool_call_from_item(item: dict[str, Any], arguments: str) -> CodexToolCall:
-    parsed_arguments: dict[str, Any] = {}
-    if arguments:
-        try:
-            loaded = json.loads(arguments)
-        except json.JSONDecodeError:
-            loaded = {}
-        if isinstance(loaded, dict):
-            parsed_arguments = loaded
-
-    call_id = item.get("call_id") or item.get("id") or ""
-    name = item.get("name") or ""
-    return CodexToolCall(
-        id=str(call_id),
-        name=str(name),
-        arguments=parsed_arguments,
-    )
+    call_id = item.get("call_id") or item.get("id")
+    name = item.get("name")
+    try:
+        parsed_arguments = json.loads(arguments or "{}")
+    except json.JSONDecodeError:
+        parsed_arguments = None
+    if not (
+        isinstance(call_id, str)
+        and call_id
+        and isinstance(name, str)
+        and name
+        and isinstance(parsed_arguments, dict)
+    ):
+        raise RuntimeError("Codex response contained an incomplete tool call")
+    return CodexToolCall(id=call_id, name=name, arguments=parsed_arguments)
 
 
 def _citation_from_annotation(annotation: Any) -> CodexCitation | None:
@@ -866,6 +872,16 @@ def _citations_from_event(event: dict[str, Any]) -> list[CodexCitation]:
         for annotation in annotations
         if (citation := _citation_from_annotation(annotation)) is not None
     ]
+
+
+async def _aiter_completed_response_events(response: Any) -> AsyncIterator[dict[str, Any]]:
+    async for event in _aiter_sse_events(response):
+        if stream_error := _stream_event_exception(event):
+            raise stream_error
+        yield event
+        if event.get("type") == "response.completed":
+            return
+    raise RuntimeError("Codex stream ended before response.completed")
 
 
 async def _aiter_sse_events(response: Any) -> AsyncIterator[dict[str, Any]]:
