@@ -68,6 +68,7 @@ async def test_generate_image_uses_codex_responses_image_generation_tool():
                     }
                 },
             )
+            + _event("response.completed", {"type": "response.completed"})
             + ["data: [DONE]", ""]
         )
     )
@@ -129,6 +130,7 @@ async def test_generate_image_accepts_partial_image_b64_events_without_type():
             f"data: {json.dumps(payload)}",
             "",
         ]
+        + _event("response.completed", {"type": "response.completed"})
     )
     client = CodexClient(
         http_client=FakeHttpClient(response),

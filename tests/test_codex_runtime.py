@@ -8,6 +8,7 @@ from custom_components.codex_assist.codex_auth import CodexAuthTemporaryError, C
 from custom_components.codex_assist.codex_runtime import (
     RuntimeTokenCoordinator,
     resolve_runtime_tokens,
+    runtime_token_coordinator,
 )
 
 
@@ -32,6 +33,17 @@ class FailingAuthClient:
 
     async def refresh(self, tokens):
         raise self.error
+
+
+def test_runtime_token_coordinator_survives_entry_runtime_data_reset():
+    class Entry:
+        runtime_data = None
+
+    entry = Entry()
+    coordinator = runtime_token_coordinator(entry)
+    entry.runtime_data = None
+
+    assert runtime_token_coordinator(entry) is coordinator
 
 
 @pytest.mark.asyncio

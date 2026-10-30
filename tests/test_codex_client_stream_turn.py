@@ -14,9 +14,12 @@ from custom_components.codex_assist.codex_client import (
 
 
 class FakeStreamResponse:
-    def __init__(self, status_code, lines, *, body=b""):
+    def __init__(self, status_code, lines, *, body=b"", complete=True):
         self.status_code = status_code
-        self._lines = lines
+        self._lines = list(lines)
+        if complete and not _contains_completed_event(self._lines):
+            # Normal fake responses terminate successfully unless a test opts into truncation.
+            self._lines.extend(_event({"type": "response.completed"}))
         self._body = body
 
     async def __aenter__(self):
@@ -48,6 +51,21 @@ class FakeHttpClient:
 
 def _event(payload):
     return ["data: " + json.dumps(payload), ""]
+
+
+def _contains_completed_event(lines):
+    for line in lines:
+        if line == "event: response.completed":
+            return True
+        if not line.startswith("data: "):
+            continue
+        try:
+            payload = json.loads(line.removeprefix("data: "))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and payload.get("type") == "response.completed":
+            return True
+    return False
 
 
 @pytest.mark.asyncio
@@ -165,7 +183,7 @@ async def test_stream_turn_posts_structured_output_format_with_verbosity():
 
 
 @pytest.mark.asyncio
-async def test_stream_turn_yields_function_call_after_arguments_complete():
+async def test_stream_turn_yields_only_completed_output_item_tool_calls():
     response = FakeStreamResponse(
         200,
         _event(
@@ -188,6 +206,18 @@ async def test_stream_turn_yields_function_call_after_arguments_complete():
             {
                 "type": "response.function_call_arguments.done",
                 "arguments": '{"name":"Kitchen","domain":"light"}',
+            }
+        )
+        + _event(
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "call_id": "call-1",
+                    "name": "HassTurnOn",
+                    "arguments": '{"name":"Kitchen","domain":"light"}',
+                    "status": "completed",
+                },
             }
         ),
     )
@@ -261,6 +291,30 @@ async def test_stream_turn_correlates_interleaved_function_call_arguments_by_ite
                 "type": "response.function_call_arguments.done",
                 "item_id": "item-1",
                 "arguments": '{"name":"Kitchen","domain":"light"}',
+            }
+        )
+        + _event(
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "call_id": "call-2",
+                    "name": "HassSetPosition",
+                    "arguments": '{"name":"Shade","position":50}',
+                    "status": "completed",
+                },
+            }
+        )
+        + _event(
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "call_id": "call-1",
+                    "name": "HassTurnOn",
+                    "arguments": '{"name":"Kitchen","domain":"light"}',
+                    "status": "completed",
+                },
             }
         ),
     )
@@ -504,3 +558,65 @@ async def test_stream_turn_preserves_output_item_done_payloads_exactly():
     assert [
         delta.item for delta in deltas if isinstance(delta, CodexResponseItemDelta)
     ] == output_items
+
+
+@pytest.mark.asyncio
+async def test_stream_turn_does_not_yield_tool_call_when_response_is_truncated():
+    response = FakeStreamResponse(
+        200,
+        _event(
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "call_id": "call-1",
+                    "name": "HassTurnOn",
+                    "arguments": '{"name":"Kitchen"}',
+                    "status": "completed",
+                },
+            }
+        ),
+        complete=False,
+    )
+    client = CodexClient(http_client=FakeHttpClient(response), access_token="token-1")
+    deltas = []
+
+    with pytest.raises(RuntimeError, match="ended before response.completed"):
+        async for delta in client.stream_turn(
+            model="gpt-5.4",
+            instructions="Use tools.",
+            input_items=[{"role": "user", "content": "turn on kitchen"}],
+            tools=[{"type": "function", "name": "HassTurnOn", "parameters": {}}],
+        ):
+            deltas.append(delta)
+
+    assert not any(isinstance(delta, CodexToolCallDelta) for delta in deltas)
+
+
+@pytest.mark.asyncio
+async def test_stream_turn_rejects_malformed_completed_tool_arguments():
+    response = FakeStreamResponse(
+        200,
+        _event(
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "call_id": "call-1",
+                    "name": "HassTurnOn",
+                    "arguments": "[]",
+                    "status": "completed",
+                },
+            }
+        ),
+    )
+    client = CodexClient(http_client=FakeHttpClient(response), access_token="token-1")
+
+    with pytest.raises(RuntimeError, match="incomplete tool call"):
+        async for _delta in client.stream_turn(
+            model="gpt-5.4",
+            instructions="Use tools.",
+            input_items=[{"role": "user", "content": "turn on kitchen"}],
+            tools=[{"type": "function", "name": "HassTurnOn", "parameters": {}}],
+        ):
+            pass
